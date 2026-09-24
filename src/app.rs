@@ -5,7 +5,7 @@
 //! pipeline decides whether a newly copied URL should be shortened.
 
 use crate::hotkey::Modifiers;
-use crate::ui::Ui;
+use crate::prompt::Prompter;
 use anyhow::{Context, Result};
 use clipconv::action::Action;
 use clipconv::config::{self, Config};
@@ -138,23 +138,23 @@ impl App {
     }
 
     /// The hotkey pipeline: read the clipboard, offer the menu, run the choice.
-    pub fn on_hotkey(&self, ui: &Ui) {
+    pub fn on_hotkey(&self, prompter: &Prompter) {
         // `swap` rather than load-then-store: two hotkey threads can arrive at
         // once, and only one may proceed.
         if self.busy.swap(true, Ordering::SeqCst) {
             log::debug!("ignoring hotkey: an action is already running");
             return;
         }
-        let result = self.run_hotkey(ui);
+        let result = self.run_hotkey(prompter);
         self.busy.store(false, Ordering::SeqCst);
 
         if let Err(e) = result {
             log::warn!("action failed: {e:#}");
-            ui.error(&format!("{e:#}"));
+            prompter.error(&format!("{e:#}"));
         }
     }
 
-    fn run_hotkey(&self, ui: &Ui) -> Result<()> {
+    fn run_hotkey(&self, prompter: &Prompter) -> Result<()> {
         let clip = match clipboard::read() {
             Ok(clip) => clip,
             Err(clipboard::ClipboardError::Empty) => {
@@ -180,7 +180,13 @@ impl App {
             .map(|a| (a.id.clone(), a.label.clone()))
             .collect();
 
-        let Some(choice) = ui.choose_action(&clip.describe(), &labelled, config.paste_after_action)
+        log::debug!(
+            "offering {} actions for {} content",
+            labelled.len(),
+            clip.kind()
+        );
+        let Some(choice) =
+            prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)
         else {
             log::debug!("action menu dismissed");
             return Ok(());
@@ -190,6 +196,7 @@ impl App {
             self.set_paste_after(choice.paste_after);
         }
 
+        log::debug!("chose {}", choice.action_id);
         let Some(action) = offered.iter().find(|a| a.id == choice.action_id) else {
             log::warn!("chosen action {} vanished", choice.action_id);
             return Ok(());
@@ -200,7 +207,7 @@ impl App {
         // focus back to where the user actually was.
         std::thread::sleep(Duration::from_millis(config.focus_restore_delay_ms));
 
-        let outcome = runner::run(action, &clip, &config, ui)?;
+        let outcome = runner::run(action, &clip, &config, prompter)?;
         let Some(outcome) = outcome else {
             log::debug!("action cancelled at a prompt");
             return Ok(());
@@ -220,6 +227,7 @@ impl App {
             typing::press_paste(&config.commands).context("pasting after the action")?;
         }
 
+        log::info!("{} finished: {}", action.id, outcome.message);
         notify(&action.label, &outcome.message);
         Ok(())
     }
@@ -284,7 +292,7 @@ pub fn notify(summary: &str, body: &str) {
     if let Err(e) = notify_rust::Notification::new()
         .summary(summary)
         .body(body)
-        .appname("linux-clip-convert")
+        .appname("clip-convert")
         .show()
     {
         log::debug!("could not show a notification: {e}");

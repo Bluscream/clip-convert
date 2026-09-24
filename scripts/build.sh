@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The build gate for linux-clip-convert.
+# The build gate for clip-convert.
 #
 # GTK development headers are not available on the immutable host, so the build
 # runs inside the `build-box` distrobox. The core crate has no UI dependencies
@@ -71,10 +71,10 @@ in_container "cargo doc --workspace --no-deps"
 if [[ $RELEASE -eq 1 ]]; then
     echo "==> release build"
     in_container "cargo build --release"
-    BINARY="$PROJECT_DIR/target/release/linux-clip-convert"
+    BINARY="$PROJECT_DIR/target/release/clip-convert"
 else
     in_container "cargo build"
-    BINARY="$PROJECT_DIR/target/debug/linux-clip-convert"
+    BINARY="$PROJECT_DIR/target/debug/clip-convert"
 fi
 
 echo "==> built $BINARY"

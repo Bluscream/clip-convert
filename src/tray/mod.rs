@@ -12,9 +12,8 @@ mod desktop;
 mod linux;
 
 use crate::app::App;
-use crate::ui::UiCommand;
+use crate::command::Commands;
 use anyhow::Result;
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 /// Publishes the tray icon.
@@ -27,7 +26,7 @@ use std::sync::Arc;
 /// Returns an error if the tray could not be published. Callers should treat
 /// this as degraded rather than fatal: the hotkey and auto-shortening still
 /// work without a tray icon.
-pub fn start(app: Arc<App>, commands: Sender<UiCommand>) -> Result<String> {
+pub fn start(app: Arc<App>, commands: Commands) -> Result<String> {
     #[cfg(target_os = "linux")]
     {
         linux::start(app, commands)

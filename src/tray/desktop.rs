@@ -9,14 +9,13 @@
 //! without a tray icon rather than appearing to work.
 
 use crate::app::App;
-use crate::ui::UiCommand;
+use crate::command::{Command, Commands};
 use anyhow::{Context, Result};
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
-pub fn start(app: Arc<App>, commands: Sender<UiCommand>) -> Result<String> {
+pub fn start(app: Arc<App>, commands: Commands) -> Result<String> {
     let menu = Menu::new();
 
     let auto = CheckMenuItem::new("Auto-shorten copied links", true, app.auto_shorten(), None);
@@ -59,9 +58,9 @@ pub fn start(app: Arc<App>, commands: Sender<UiCommand>) -> Result<String> {
             } else if event.id == edit_id {
                 open_config(app.config_path());
             } else if event.id == reload_id {
-                let _ = commands.send(UiCommand::Reload);
+                let _ = commands.send(Command::Reload);
             } else if event.id == quit_id {
-                let _ = commands.send(UiCommand::Quit);
+                let _ = commands.send(Command::Quit);
                 break;
             }
         }

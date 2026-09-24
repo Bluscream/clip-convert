@@ -7,7 +7,7 @@
 # be flat and near zero.
 set -euo pipefail
 
-BINARY="${1:?usage: probe.sh /path/to/linux-clip-convert}"
+BINARY="${1:?usage: probe.sh /path/to/clip-convert}"
 SAMPLE_SECONDS="${LCC_PROBE_SECONDS:-15}"
 
 CONFIG_DIR="$(mktemp -d)"

@@ -1,9 +1,8 @@
 //! The tray icon on Linux, as a `StatusNotifierItem`.
 
 use crate::app::App;
-use crate::ui::UiCommand;
+use crate::command::{Command, Commands};
 use anyhow::{Context, Result};
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +11,7 @@ const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Tray {
     app: Arc<App>,
-    commands: Sender<UiCommand>,
+    commands: Commands,
 }
 
 impl ksni::Tray for Tray {
@@ -82,7 +81,7 @@ impl ksni::Tray for Tray {
                 label: "Reload configuration".to_string(),
                 icon_name: "view-refresh".to_string(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.commands.send(UiCommand::Reload);
+                    let _ = tray.commands.send(Command::Reload);
                 }),
                 ..Default::default()
             }
@@ -92,7 +91,7 @@ impl ksni::Tray for Tray {
                 label: "Quit".to_string(),
                 icon_name: "application-exit".to_string(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.commands.send(UiCommand::Quit);
+                    let _ = tray.commands.send(Command::Quit);
                 }),
                 ..Default::default()
             }
@@ -102,7 +101,7 @@ impl ksni::Tray for Tray {
 }
 
 /// Publishes the tray on a small runtime of its own.
-pub fn start(app: Arc<App>, commands: Sender<UiCommand>) -> Result<String> {
+pub fn start(app: Arc<App>, commands: Commands) -> Result<String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

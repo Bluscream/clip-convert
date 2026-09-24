@@ -1,0 +1,27 @@
+[package]
+name = "clip-convert-dialog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The dialog process for clip-convert: reads one request on stdin, shows it, prints the reply."
+
+[[bin]]
+name = "clip-convert-dialog"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clip-convert-core = { path = "../clip-convert-core", default-features = false }
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+serde_json = "1.0"
+egui = "0.29"
+# glow (OpenGL) rather than wgpu: lighter and faster to open, and this draws
+# four dialogs, not a 3D scene.
+eframe = { version = "0.29", default-features = false, features = [
+    "default_fonts", "glow", "wayland", "x11",
+] }

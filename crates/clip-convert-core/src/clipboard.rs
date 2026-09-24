@@ -21,6 +21,9 @@ use std::time::Duration;
 /// How often the fallback watcher checks for a change.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// How long to wait for a clipboard write to start being served.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
     #[error("the clipboard is empty")]
@@ -29,6 +32,8 @@ pub enum ClipboardError {
     Backend(#[from] arboard::Error),
     #[error("the clipboard image could not be converted: {0}")]
     Image(#[source] image::ImageError),
+    #[error("the clipboard did not become available")]
+    Unavailable,
     #[error("could not start the clipboard watcher: {0}")]
     Watch(#[source] std::io::Error),
 }
@@ -104,7 +109,10 @@ fn image_error(error: &crate::encode::EncodeError) -> image::ImageError {
 ///
 /// Returns a backend error if the clipboard could not be written.
 pub fn write_text(text: &str) -> Result<(), ClipboardError> {
-    open()?.set_text(text.to_string())?;
+    let owned = text.to_string();
+    let characters = text.chars().count();
+    serve(move |clipboard| set_text(clipboard, owned))?;
+    log::debug!("wrote {characters} characters to the clipboard");
     Ok(())
 }
 
@@ -115,23 +123,109 @@ pub fn write_text(text: &str) -> Result<(), ClipboardError> {
 /// Returns [`ClipboardError::Image`] if the bytes are not a readable image, or
 /// a backend error if the clipboard could not be written.
 pub fn write_image(_mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
-    let decoded = image::load_from_memory(bytes).map_err(ClipboardError::Image)?;
-    let rgba = decoded.to_rgba8();
+    let rgba = image::load_from_memory(bytes)
+        .map_err(ClipboardError::Image)?
+        .to_rgba8();
+    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+    let raw = rgba.into_raw();
 
-    open()?.set_image(arboard::ImageData {
-        width: rgba.width() as usize,
-        height: rgba.height() as usize,
-        bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+    serve(move |clipboard| {
+        set_image(
+            clipboard,
+            arboard::ImageData {
+                width,
+                height,
+                bytes: std::borrow::Cow::Owned(raw),
+            },
+        )
     })?;
+    log::debug!("wrote a {width}x{height} image to the clipboard");
     Ok(())
 }
 
-/// A source of clipboard-change notifications.
+/// Hands `write` a clipboard handle and keeps it alive long enough to matter.
+///
+/// On X11 and Wayland the clipboard holds no data of its own: the application
+/// that copied something stays running and hands it over on request. Writing
+/// through a handle that is dropped immediately therefore publishes an offer
+/// that dies at once — on KDE the result was the clipboard reverting to a
+/// `application/x-kde-onlyReplaceEmpty` placeholder.
+///
+/// So the write happens on a thread of its own, which goes on serving the
+/// selection until another application takes ownership and then exits. At most
+/// one of these is alive at a time, because the next copy — by this app or any
+/// other — releases the previous one.
+fn serve(
+    write: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error> + Send + 'static,
+) -> Result<(), ClipboardError> {
+    let (ready_tx, ready_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let mut clipboard = match arboard::Clipboard::new() {
+            Ok(clipboard) => clipboard,
+            Err(e) => {
+                let _ = ready_tx.send(Err(e));
+                return;
+            }
+        };
+
+        // Reported before the call, because on Linux it does not return until
+        // ownership is lost, which may be minutes or hours later.
+        let _ = ready_tx.send(Ok(()));
+
+        if let Err(e) = write(&mut clipboard) {
+            log::warn!("serving the clipboard ended: {e}");
+        }
+    });
+
+    match ready_rx.recv_timeout(WRITE_TIMEOUT) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(ClipboardError::Backend(e)),
+        Err(_) => Err(ClipboardError::Unavailable),
+    }
+}
+
+/// Publishes text, keeping ownership for as long as the platform requires.
+#[cfg(target_os = "linux")]
+fn set_text(clipboard: &mut arboard::Clipboard, text: String) -> Result<(), arboard::Error> {
+    use arboard::SetExtLinux;
+    clipboard.set().wait().text(text)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_text(clipboard: &mut arboard::Clipboard, text: String) -> Result<(), arboard::Error> {
+    // Windows and macOS copy the data into a system-owned clipboard, so the
+    // writer does not have to stay alive.
+    clipboard.set_text(text)
+}
+
+/// Publishes an image, keeping ownership for as long as the platform requires.
+#[cfg(target_os = "linux")]
+fn set_image(
+    clipboard: &mut arboard::Clipboard,
+    image: arboard::ImageData<'static>,
+) -> Result<(), arboard::Error> {
+    use arboard::SetExtLinux;
+    clipboard.set().wait().image(image)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_image(
+    clipboard: &mut arboard::Clipboard,
+    image: arboard::ImageData<'static>,
+) -> Result<(), arboard::Error> {
+    clipboard.set_image(image)
+}
+
+/// Keeps a clipboard watcher running.
+///
+/// Held by the caller rather than by the thread that consumes the events: a
+/// detached thread's destructors never run when the process exits, which left
+/// the `wl-paste` child orphaned on every shutdown.
 pub struct Watcher {
     /// The `wl-paste --watch` child, when that backend is in use. Killed on drop
     /// so a restart does not leave orphans holding a compositor connection.
     child: Option<std::process::Child>,
-    changes: Receiver<()>,
     /// Which backend was selected, for the startup log.
     backend: &'static str,
 }
@@ -139,24 +233,21 @@ pub struct Watcher {
 impl Watcher {
     /// Starts watching the clipboard, choosing the best backend available.
     ///
+    /// Returns the watcher, which must be kept alive for as long as events are
+    /// wanted, and the channel those events arrive on.
+    ///
     /// # Errors
     ///
     /// Returns [`ClipboardError::Watch`] if no backend could be started.
-    pub fn start() -> Result<Self, ClipboardError> {
+    pub fn start() -> Result<(Self, Receiver<()>), ClipboardError> {
         #[cfg(target_os = "linux")]
-        if let Some(watcher) = wayland::start() {
+        if let Some(started) = wayland::start() {
             log::info!("clipboard backend: wl-paste --watch (event-driven)");
-            return Ok(watcher);
+            return Ok(started);
         }
 
         log::info!("clipboard backend: polling every {POLL_INTERVAL:?}");
         Ok(start_polling())
-    }
-
-    /// The channel that receives one message per clipboard change.
-    #[must_use]
-    pub fn changes(&self) -> &Receiver<()> {
-        &self.changes
     }
 
     /// Which backend is in use, for diagnostics.
@@ -179,7 +270,7 @@ impl Drop for Watcher {
 ///
 /// Used where the platform offers no change event. Only a hash is retained, so a
 /// large image on the clipboard is not held in memory between checks.
-fn start_polling() -> Watcher {
+fn start_polling() -> (Watcher, Receiver<()>) {
     let (tx, changes) = mpsc::channel();
 
     std::thread::spawn(move || {
@@ -198,11 +289,13 @@ fn start_polling() -> Watcher {
         }
     });
 
-    Watcher {
-        child: None,
+    (
+        Watcher {
+            child: None,
+            backend: "polling",
+        },
         changes,
-        backend: "polling",
-    }
+    )
 }
 
 /// A cheap value that changes when the clipboard changes.
@@ -237,7 +330,7 @@ mod wayland {
     const CHANGE_MARKER: &str = "changed";
 
     /// Starts the event-driven backend, or `None` if it is not available.
-    pub(super) fn start() -> Option<Watcher> {
+    pub(super) fn start() -> Option<(Watcher, std::sync::mpsc::Receiver<()>)> {
         // Only meaningful under Wayland; X11 sessions use the polling fallback.
         std::env::var_os("WAYLAND_DISPLAY")?;
 
@@ -271,11 +364,13 @@ mod wayland {
             }
         });
 
-        Some(Watcher {
-            child: Some(child),
+        Some((
+            Watcher {
+                child: Some(child),
+                backend: "wl-paste",
+            },
             changes,
-            backend: "wl-paste",
-        })
+        ))
     }
 
     /// Kept so the error type is used on every platform.
@@ -353,7 +448,7 @@ mod tests {
 
     #[test]
     fn the_watcher_starts_and_is_cleaned_up_on_drop() {
-        let Ok(watcher) = Watcher::start() else {
+        let Ok((watcher, _changes)) = Watcher::start() else {
             return;
         };
         let pid = watcher.child.as_ref().map(std::process::Child::id);

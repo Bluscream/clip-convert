@@ -48,6 +48,14 @@ image = { version = "0.25", default-features = false, features = [
 webp = "0.3"
 color_quant = "1.1"
 png = "0.17"
+serde_json = "1.0"
+
+# Without `wayland-data-control` arboard speaks only X11, and on a Wayland
+# session it then reads XWayland's clipboard — which mirrors the real one only
+# intermittently, so reads came back empty at random.
+[target.'cfg(target_os = "linux")'.dependencies.arboard]
+version = "3.4"
+features = ["image-data", "wayland-data-control"]
 
 # `enigo` defaults to the `xdo` backend, which links the C library libxdo. The
 # pure-Rust backends are used instead so the crate builds with no C toolchain and

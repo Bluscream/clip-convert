@@ -355,7 +355,7 @@ pub fn config_path() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    base.join("linux-clip-convert").join("config.toml")
+    base.join("clip-convert").join("config.toml")
 }
 
 /// Reads the config at `path`, writing a commented default file if none exists.

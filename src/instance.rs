@@ -30,7 +30,7 @@ fn lock_path() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(std::env::temp_dir)
-        .join("linux-clip-convert.lock")
+        .join("clip-convert.lock")
 }
 
 /// Takes the single-instance lock.
@@ -40,9 +40,20 @@ fn lock_path() -> PathBuf {
 /// Returns an error if the lock file cannot be created, or if another instance
 /// already holds it.
 pub fn acquire() -> Result<Guard> {
-    let path = lock_path();
-    let file = File::create(&path)
-        .with_context(|| format!("creating the lock file {}", path.display()))?;
+    acquire_at(&lock_path())
+}
+
+/// Takes the lock on a specific file.
+///
+/// Separate from [`acquire`] so tests can use a temporary path instead of the
+/// real one, which is shared with any running copy of the app.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be created, or if it is already locked.
+pub fn acquire_at(path: &std::path::Path) -> Result<Guard> {
+    let file =
+        File::create(path).with_context(|| format!("creating the lock file {}", path.display()))?;
 
     file.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("another instance is already running"))?;
@@ -54,12 +65,52 @@ pub fn acquire() -> Result<Guard> {
 mod tests {
     use super::*;
 
+    /// Asks a separate process whether the lock is free.
+    ///
+    /// Cross-process exclusion is the property that matters — two copies of the
+    /// app must not both run — and it is the only one `flock` actually
+    /// guarantees. Two acquisitions inside one process are not a meaningful
+    /// test of it.
+    #[cfg(target_os = "linux")]
+    fn lock_is_free(path: &std::path::Path) -> bool {
+        std::process::Command::new("flock")
+            .arg("--nonblock")
+            .arg(path)
+            .args(["--command", "true"])
+            .status()
+            .expect("flock(1) is part of util-linux and should be present")
+            .success()
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
-    fn the_lock_is_released_when_the_guard_is_dropped() {
-        let guard = acquire().expect("first acquire");
-        assert!(acquire().is_err(), "a second acquire must fail");
+    fn another_process_cannot_take_the_lock_until_the_guard_is_dropped() {
+        // A temporary path, not the real one: the real lock is shared with any
+        // running copy of the app, which would make this test fail at random.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.lock");
+
+        assert!(lock_is_free(&path), "a fresh lock file should be free");
+
+        let guard = acquire_at(&path).expect("acquire");
+        assert!(
+            !lock_is_free(&path),
+            "a second process must not be able to take a held lock"
+        );
+
         drop(guard);
-        assert!(acquire().is_ok(), "the lock should be free again");
+        assert!(
+            lock_is_free(&path),
+            "the lock should be released when the guard is dropped"
+        );
+    }
+
+    #[test]
+    fn acquiring_creates_the_lock_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested.lock");
+        let _guard = acquire_at(&path).expect("acquire");
+        assert!(path.is_file());
     }
 
     #[test]
@@ -68,7 +119,7 @@ mod tests {
         assert!(path.is_absolute());
         assert_eq!(
             path.file_name().and_then(|n| n.to_str()),
-            Some("linux-clip-convert.lock")
+            Some("clip-convert.lock")
         );
     }
 }
