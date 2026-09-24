@@ -1,35 +1,23 @@
-//! The tray icon, as a `StatusNotifierItem`.
-//!
-//! `ksni` speaks the `StatusNotifierItem` protocol over D-Bus directly, which is
-//! what KDE implements natively and what libappindicator is a wrapper around.
-//! Using it avoids linking any C tray library, and so avoids the mismatch
-//! between the appindicator and Ayatana forks that different distributions ship.
+//! The tray icon on Linux, as a `StatusNotifierItem`.
 
 use crate::app::App;
+use crate::ui::UiCommand;
+use anyhow::{Context, Result};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
 
-/// Things the tray asks the main thread to do.
-pub enum TrayCommand {
-    Reload,
-    Quit,
-}
+/// How long to wait for a tray host to answer before carrying on without one.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub struct Tray {
+struct Tray {
     app: Arc<App>,
-    commands: Sender<TrayCommand>,
-}
-
-impl Tray {
-    #[must_use]
-    pub fn new(app: Arc<App>, commands: Sender<TrayCommand>) -> Self {
-        Self { app, commands }
-    }
+    commands: Sender<UiCommand>,
 }
 
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
-        "linux-clip-convert".to_string()
+        "clip-convert".to_string()
     }
 
     fn title(&self) -> String {
@@ -38,7 +26,7 @@ impl ksni::Tray for Tray {
 
     fn icon_name(&self) -> String {
         // A themed name rather than a bundled pixmap: it follows the user's icon
-        // theme and stays sharp at any panel size. The state is still visible,
+        // theme and stays sharp at any panel size. The state stays visible
         // because the name changes with it.
         if self.app.auto_shorten() {
             "edit-link".to_string()
@@ -48,14 +36,13 @@ impl ksni::Tray for Tray {
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
-        let state = if self.app.auto_shorten() {
-            "Auto-shorten is on"
-        } else {
-            "Auto-shorten is off"
-        };
         ksni::ToolTip {
             title: "Clip Convert".to_string(),
-            description: state.to_string(),
+            description: if self.app.auto_shorten() {
+                "Auto-shorten is on".to_string()
+            } else {
+                "Auto-shorten is off".to_string()
+            },
             icon_name: self.icon_name(),
             icon_pixmap: Vec::new(),
         }
@@ -95,7 +82,7 @@ impl ksni::Tray for Tray {
                 label: "Reload configuration".to_string(),
                 icon_name: "view-refresh".to_string(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.commands.send(TrayCommand::Reload);
+                    let _ = tray.commands.send(UiCommand::Reload);
                 }),
                 ..Default::default()
             }
@@ -105,11 +92,46 @@ impl ksni::Tray for Tray {
                 label: "Quit".to_string(),
                 icon_name: "application-exit".to_string(),
                 activate: Box::new(|tray: &mut Self| {
-                    let _ = tray.commands.send(TrayCommand::Quit);
+                    let _ = tray.commands.send(UiCommand::Quit);
                 }),
                 ..Default::default()
             }
             .into(),
         ]
+    }
+}
+
+/// Publishes the tray on a small runtime of its own.
+pub fn start(app: Arc<App>, commands: Sender<UiCommand>) -> Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting the tray runtime")?;
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        runtime.block_on(async move {
+            use ksni::TrayMethods;
+            let tray = Tray { app, commands };
+            match tray.spawn().await {
+                Ok(handle) => {
+                    let _ = ready_tx.send(Ok(()));
+                    // Keeps the runtime — and with it the tray — alive. The
+                    // handle must not be dropped or the item disappears.
+                    std::future::pending::<()>().await;
+                    drop(handle);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(format!("{e}")));
+                }
+            }
+        });
+    });
+
+    match ready_rx.recv_timeout(PUBLISH_TIMEOUT) {
+        Ok(Ok(())) => Ok("StatusNotifierItem (ksni)".to_string()),
+        Ok(Err(e)) => anyhow::bail!("could not publish the tray icon: {e}"),
+        // No StatusNotifierWatcher is degraded, not fatal.
+        Err(_) => anyhow::bail!("no tray host responded"),
     }
 }
