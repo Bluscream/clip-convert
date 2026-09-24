@@ -279,6 +279,31 @@ impl Clip {
         })
     }
 
+    /// The single kind that best describes what was copied.
+    ///
+    /// Used to key a per-type default action. A selection of pictures answers
+    /// `Image` rather than `Files`, because "always resize images" is the rule
+    /// someone means whether the pictures were pasted or selected in a file
+    /// manager.
+    #[must_use]
+    pub fn source_kind(&self) -> ContentKind {
+        match self.primary() {
+            Facet::Files(paths) => {
+                if crate::files::all_images(paths) {
+                    ContentKind::Image
+                } else if crate::files::all_videos(paths) {
+                    ContentKind::Video
+                } else {
+                    ContentKind::Files
+                }
+            }
+            Facet::Image { .. } => ContentKind::Image,
+            Facet::Html(_) => ContentKind::Html,
+            Facet::Url(_) => ContentKind::Url,
+            Facet::Text(_) => ContentKind::Text,
+        }
+    }
+
     /// The noun for `kind`, as it should read on a button.
     ///
     /// Pluralised from how many items are actually present, so a selection of
@@ -533,6 +558,39 @@ mod tests {
         assert_eq!(files.as_bytes(), b"/a/x.png");
 
         assert_eq!(text("hello").as_bytes(), b"hello");
+    }
+
+    #[test]
+    fn the_source_kind_describes_what_was_copied() {
+        assert_eq!(text("hello").source_kind(), ContentKind::Text);
+        assert_eq!(
+            text("https://example.com/a").source_kind(),
+            ContentKind::Url
+        );
+        assert_eq!(
+            Clip::from_image("image/png".to_string(), vec![1])
+                .expect("non-empty")
+                .source_kind(),
+            ContentKind::Image
+        );
+    }
+
+    #[test]
+    fn a_picture_selection_reports_images_rather_than_files() {
+        // "Always resize images" should apply whether they were pasted or
+        // selected in a file manager.
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        assert_eq!(clip.source_kind(), ContentKind::Image);
+
+        let videos = Clip::from_files(vec![PathBuf::from("/a/clip.mp4")]).expect("non-empty");
+        assert_eq!(videos.source_kind(), ContentKind::Video);
+
+        let mixed = Clip::from_files(vec![
+            PathBuf::from("/a/one.png"),
+            PathBuf::from("/a/notes.txt"),
+        ])
+        .expect("non-empty");
+        assert_eq!(mixed.source_kind(), ContentKind::Files);
     }
 
     #[test]

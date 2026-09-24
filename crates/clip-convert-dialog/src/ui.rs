@@ -10,9 +10,13 @@ use clipconv::protocol::{ActionChoice, Reply, Request};
 /// Width of every dialog, in logical points.
 pub const DIALOG_WIDTH: f32 = 460.0;
 
-/// Height of an action button. Deliberately large: these are the primary
-/// targets, hit immediately after a hotkey, often without looking closely.
-const BUTTON_HEIGHT: f32 = 54.0;
+/// Minimum height of an action button. Deliberately large: these are the
+/// primary targets, hit immediately after a hotkey, often without looking
+/// closely. A button grows past this when its label needs two lines.
+const BUTTON_HEIGHT: f32 = 58.0;
+
+/// Size of the text on an action button.
+const BUTTON_TEXT: f32 = 18.0;
 
 /// Gap between action buttons.
 const BUTTON_GAP: f32 = 12.0;
@@ -125,12 +129,15 @@ pub fn show(request: &Request, state: &mut State, ctx: &egui::Context) -> Option
 }
 
 /// A full-width button sized for quick, confident clicking.
+///
+/// `add_sized` rather than `min_size`, because only the former centres the
+/// label; a button given a minimum size draws its text against the left edge.
+/// Wrapping is on so a long label from a custom action folds onto a second line
+/// instead of running off the edge.
 fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label).size(16.0).strong();
-    ui.add_sized(
-        [ui.available_width(), BUTTON_HEIGHT],
-        egui::Button::new(text),
-    )
+    let text = egui::RichText::new(label).size(BUTTON_TEXT).strong();
+    let width = ui.available_width();
+    ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
 }
 
 /// A bold line summarising what is on the clipboard.
@@ -148,15 +155,25 @@ fn choose_action(
     heading(ui, description);
 
     let mut chosen = None;
-    for (id, label) in actions {
-        if wide_button(ui, label).clicked() {
-            chosen = Some(id.clone());
-        }
-        ui.add_space(BUTTON_GAP);
-    }
+    // The checkbox is anchored to the bottom so the list above it can take the
+    // remaining space and scroll, rather than pushing it off the window.
+    egui::TopBottomPanel::bottom("paste")
+        .frame(egui::Frame::none().outer_margin(egui::Margin {
+            top: 10.0,
+            ..egui::Margin::ZERO
+        }))
+        .show_inside(ui, |ui| {
+            ui.checkbox(paste_after, "Paste after action");
+        });
 
-    ui.add_space(4.0);
-    ui.checkbox(paste_after, "Paste after action");
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for (id, label) in actions {
+            if wide_button(ui, label).clicked() {
+                chosen = Some(id.clone());
+            }
+            ui.add_space(BUTTON_GAP);
+        }
+    });
 
     chosen.map(|action_id| Reply::Action {
         choice: ActionChoice {
@@ -230,12 +247,10 @@ fn ask_resize_target(
             // Two lines: the name, and the limits it encodes, so choosing does
             // not require remembering each platform's rules.
             let text =
-                egui::RichText::new(format!("{}\n{}", preset.label, preset.summary())).size(14.0);
+                egui::RichText::new(format!("{}\n{}", preset.label, preset.summary())).size(15.0);
+            let width = ui.available_width();
             if ui
-                .add_sized(
-                    [ui.available_width(), BUTTON_HEIGHT],
-                    egui::Button::new(text),
-                )
+                .add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
                 .clicked()
             {
                 chosen = Some(preset.clone());
