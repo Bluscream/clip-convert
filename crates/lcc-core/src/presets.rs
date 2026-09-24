@@ -38,111 +38,118 @@ pub struct Preset {
     pub fit: Fit,
 }
 
+/// The factory presets as plain data: id, label, width, height, max bytes,
+/// format, and whether the canvas size is mandatory.
+const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 10] = [
+    (
+        "discord",
+        "Discord sticker",
+        320,
+        320,
+        512 * 1024,
+        "png",
+        Fit::Exact,
+    ),
+    (
+        "telegram",
+        "Telegram sticker",
+        512,
+        512,
+        512 * 1024,
+        "webp",
+        Fit::Inside,
+    ),
+    (
+        "telegram-icon",
+        "Telegram pack icon",
+        100,
+        100,
+        128 * 1024,
+        "png",
+        Fit::Exact,
+    ),
+    (
+        "signal",
+        "Signal sticker",
+        512,
+        512,
+        300 * 1024,
+        "png",
+        Fit::Exact,
+    ),
+    (
+        "whatsapp",
+        "WhatsApp sticker",
+        512,
+        512,
+        100 * 1024,
+        "webp",
+        Fit::Exact,
+    ),
+    (
+        "whatsapp-tray",
+        "WhatsApp tray icon",
+        96,
+        96,
+        50 * 1024,
+        "png",
+        Fit::Exact,
+    ),
+    (
+        "vrchat",
+        "VRChat sticker",
+        1024,
+        1024,
+        8 * 1024 * 1024,
+        "png",
+        Fit::Exact,
+    ),
+    (
+        "slack",
+        "Slack emoji",
+        128,
+        128,
+        128 * 1024,
+        "png",
+        Fit::Inside,
+    ),
+    (
+        "line",
+        "LINE sticker",
+        320,
+        270,
+        1024 * 1024,
+        "png",
+        Fit::Inside,
+    ),
+    (
+        "matrix",
+        "Matrix sticker",
+        512,
+        512,
+        512 * 1024,
+        "webp",
+        Fit::Inside,
+    ),
+];
+
 /// The presets shipped in a freshly written config file.
 #[must_use]
 pub fn factory() -> Vec<Preset> {
-    let p = |id: &str, label: &str, width, height, max_bytes, format: &str, fit| Preset {
-        id: id.to_string(),
-        label: label.to_string(),
-        width,
-        height,
-        max_bytes,
-        format: format.to_string(),
-        fit,
-    };
-
-    vec![
-        p(
-            "discord",
-            "Discord sticker",
-            320,
-            320,
-            512 * 1024,
-            "png",
-            Fit::Exact,
-        ),
-        p(
-            "telegram",
-            "Telegram sticker",
-            512,
-            512,
-            512 * 1024,
-            "webp",
-            Fit::Inside,
-        ),
-        p(
-            "telegram-icon",
-            "Telegram pack icon",
-            100,
-            100,
-            128 * 1024,
-            "png",
-            Fit::Exact,
-        ),
-        p(
-            "signal",
-            "Signal sticker",
-            512,
-            512,
-            300 * 1024,
-            "png",
-            Fit::Exact,
-        ),
-        p(
-            "whatsapp",
-            "WhatsApp sticker",
-            512,
-            512,
-            100 * 1024,
-            "webp",
-            Fit::Exact,
-        ),
-        p(
-            "whatsapp-tray",
-            "WhatsApp tray icon",
-            96,
-            96,
-            50 * 1024,
-            "png",
-            Fit::Exact,
-        ),
-        p(
-            "vrchat",
-            "VRChat sticker",
-            1024,
-            1024,
-            8 * 1024 * 1024,
-            "png",
-            Fit::Exact,
-        ),
-        p(
-            "slack",
-            "Slack emoji",
-            128,
-            128,
-            128 * 1024,
-            "png",
-            Fit::Inside,
-        ),
-        p(
-            "line",
-            "LINE sticker",
-            320,
-            270,
-            1024 * 1024,
-            "png",
-            Fit::Inside,
-        ),
-        p(
-            "matrix",
-            "Matrix sticker",
-            512,
-            512,
-            512 * 1024,
-            "webp",
-            Fit::Inside,
-        ),
-    ]
+    FACTORY
+        .into_iter()
+        .map(
+            |(id, label, width, height, max_bytes, format, fit)| Preset {
+                id: id.to_string(),
+                label: label.to_string(),
+                width,
+                height,
+                max_bytes,
+                format: format.to_string(),
+                fit,
+            },
+        )
+        .collect()
 }
 
 impl Preset {

@@ -6,6 +6,7 @@
 //! it builds and tests in seconds.
 
 pub mod action;
+pub mod auto;
 pub mod clipboard;
 pub mod config;
 pub mod content;

@@ -187,6 +187,10 @@ pub struct Config {
     /// apps that drop synthesised keys.
     #[serde(default = "default_type_delay")]
     pub type_delay_ms: u32,
+    /// Pause after the action dialog closes, before typing or pasting, giving
+    /// the compositor time to return focus to the window the user was in.
+    #[serde(default = "default_focus_delay")]
+    pub focus_restore_delay_ms: u64,
     #[serde(default)]
     pub split: SplitSettings,
     #[serde(default)]
@@ -209,6 +213,10 @@ const fn default_type_delay() -> u32 {
     12
 }
 
+const fn default_focus_delay() -> u64 {
+    250
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -222,6 +230,7 @@ impl Default for Config {
             bypass_double_copy: true,
             ignore_ssl_errors: false,
             type_delay_ms: default_type_delay(),
+            focus_restore_delay_ms: default_focus_delay(),
             split: SplitSettings::default(),
             truncate: TruncateSettings::default(),
             commands: Commands::default(),
