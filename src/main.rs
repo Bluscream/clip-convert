@@ -12,6 +12,8 @@
 mod app;
 mod dialog;
 mod hotkey;
+mod instance;
+mod theme;
 mod tray;
 mod ui;
 
@@ -24,24 +26,18 @@ use std::sync::Arc;
 use tray::TrayCommand;
 use ui::{Ui, UiRequest};
 
-/// Only one instance may run: two would fight over the clipboard and open two
-/// menus for every hotkey press.
-const INSTANCE_LOCK: &str = "linux-clip-convert.lock";
-
 fn main() -> Result<()> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("linux_clip_convert=info,lcc_core=info"),
     )
     .init();
 
-    let instance = single_instance::SingleInstance::new(INSTANCE_LOCK)
-        .context("creating the single-instance lock")?;
-    if !instance.is_single() {
-        log::error!("another instance is already running");
-        anyhow::bail!("linux-clip-convert is already running");
-    }
+    // Held for the whole run; released by the kernel however the process exits.
+    let _instance = instance::acquire()?;
 
     gtk::init().map_err(|e| anyhow::anyhow!("could not initialise GTK: {e}"))?;
+
+    dialog::apply_color_scheme(theme::prefers_dark(dialog::gtk_prefers_dark()));
     dialog::install_css();
 
     let modifiers = Arc::new(Modifiers::default());
@@ -97,12 +93,33 @@ fn main() -> Result<()> {
         }
     });
 
+    install_signal_handler(tray_tx.clone())?;
     start_tray(Arc::clone(&app), tray_tx)?;
     start_clipboard_watch(Arc::clone(&app));
     start_hotkey(&app, &modifiers, Ui::new(ui_tx));
 
     log::info!("ready");
     gtk::main();
+    Ok(())
+}
+
+/// Quits cleanly on SIGINT and SIGTERM.
+///
+/// Without this the process dies before `Watcher`'s destructor runs, leaving the
+/// `wl-paste --watch` child orphaned and still connected to the compositor.
+fn install_signal_handler(commands: mpsc::Sender<TrayCommand>) -> Result<()> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+    ])
+    .context("installing the signal handler")?;
+
+    std::thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            log::info!("received signal {signal}; shutting down");
+            let _ = commands.send(TrayCommand::Quit);
+        }
+    });
     Ok(())
 }
 

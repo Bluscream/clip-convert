@@ -19,10 +19,10 @@ const DIALOG_WIDTH: i32 = 460;
 /// user's theme colours and only their size and weight are overridden.
 const CSS: &str = "
 .lcc-action {
-    min-height: 44px;
-    padding: 12px 20px;
-    font-size: 15px;
-    font-weight: 600;
+    min-height: 54px;
+    padding: 14px 24px;
+    font-size: 16px;
+    font-weight: 700;
 }
 .lcc-heading {
     font-size: 15px;
@@ -33,6 +33,28 @@ const CSS: &str = "
     opacity: 0.65;
 }
 ";
+
+/// What GTK currently believes about dark mode.
+///
+/// This is what a `gtk-application-prefer-dark-theme` line in `settings.ini`
+/// sets, and serves as the fallback when the portal cannot be reached.
+#[must_use]
+pub fn gtk_prefers_dark() -> bool {
+    gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme())
+}
+
+/// Applies the session's light/dark preference.
+///
+/// GTK 3 does not read the desktop portal's `color-scheme`, so on a KDE session
+/// it would otherwise draw a light dialog in a dark desktop. The value is taken
+/// from GTK's own settings where it is set, which is what the desktop's control
+/// panel writes.
+pub fn apply_color_scheme(prefer_dark: bool) {
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(prefer_dark);
+        log::debug!("dark theme preferred: {prefer_dark}");
+    }
+}
 
 /// Installs the stylesheet once for the whole process.
 pub fn install_css() {
@@ -66,11 +88,11 @@ fn shell(title: &str) -> gtk::Dialog {
 /// Adds generous padding around a dialog's content.
 fn content_box(dialog: &gtk::Dialog) -> gtk::Box {
     let area = dialog.content_area();
-    let holder = gtk::Box::new(Orientation::Vertical, 10);
-    holder.set_margin_top(18);
-    holder.set_margin_bottom(14);
-    holder.set_margin_start(18);
-    holder.set_margin_end(18);
+    let holder = gtk::Box::new(Orientation::Vertical, 12);
+    holder.set_margin_top(22);
+    holder.set_margin_bottom(18);
+    holder.set_margin_start(22);
+    holder.set_margin_end(22);
     area.add(&holder);
     holder
 }
@@ -110,7 +132,7 @@ pub fn choose_action(
 
     // Each button answers with its own response code, so the click itself
     // carries the choice and no selection state has to be tracked.
-    let buttons = gtk::Box::new(Orientation::Vertical, 8);
+    let buttons = gtk::Box::new(Orientation::Vertical, 12);
     for (index, (_, label)) in actions.iter().enumerate() {
         let button = gtk::Button::with_label(label);
         button.style_context().add_class("lcc-action");
@@ -126,7 +148,7 @@ pub fn choose_action(
 
     let check = gtk::CheckButton::with_label("Paste after action");
     check.set_active(paste_after);
-    check.set_margin_top(10);
+    check.set_margin_top(14);
     holder.add(&check);
 
     dialog.add_button("Cancel", ResponseType::Cancel);
@@ -191,7 +213,7 @@ pub fn ask_resize_target(presets: &[Preset]) -> Option<Preset> {
     let holder = content_box(&dialog);
     add_heading(&holder, "Resize to:");
 
-    let buttons = gtk::Box::new(Orientation::Vertical, 8);
+    let buttons = gtk::Box::new(Orientation::Vertical, 12);
     for (index, preset) in presets.iter().enumerate() {
         // A two-line button: the name, and the limits it encodes, so the choice
         // does not require remembering each platform's rules.

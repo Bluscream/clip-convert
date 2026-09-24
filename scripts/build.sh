@@ -16,6 +16,9 @@ usage() {
 Usage: build.sh [options]
 
   --release   Build optimised, not debug.
+
+Every cargo step runs at nice 15 on half the cores, so a build never makes the
+workstation unusable. Override with LCC_JOBS and LCC_NICE.
   --probe     After building, run the binary hidden and measure its idle CPU
               and file-descriptor count. This is the only check that catches a
               runtime regression such as a busy-wait loop. Needs a Wayland
@@ -37,13 +40,20 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Half the cores, at low priority. A full-speed cargo build makes the whole
+# workstation unusable, and none of these steps are urgent.
+JOBS="${LCC_JOBS:-$(( $(nproc) / 2 ))}"
+(( JOBS < 1 )) && JOBS=1
+NICE="${LCC_NICE:-15}"
+
 in_container() {
-    distrobox enter "$CONTAINER" -- bash -lc "cd '$PROJECT_DIR' && $1"
+    distrobox enter "$CONTAINER" -- bash -lc \
+        "cd '$PROJECT_DIR' && CARGO_BUILD_JOBS=$JOBS nice -n $NICE $1"
 }
 
 echo "==> core crate on the host (no UI dependencies)"
 cd "$PROJECT_DIR"
-cargo test -p lcc-core
+CARGO_BUILD_JOBS="$JOBS" nice -n "$NICE" cargo test -p lcc-core
 
 echo "==> format"
 in_container "cargo fmt --all --check"
@@ -60,9 +70,7 @@ in_container "cargo doc --workspace --no-deps"
 
 if [[ $RELEASE -eq 1 ]]; then
     echo "==> release build"
-    # Leave half the cores free so the workstation stays usable.
-    JOBS=$(( $(nproc) / 2 )); (( JOBS < 1 )) && JOBS=1
-    in_container "nice -n 10 cargo build --release --jobs $JOBS"
+    in_container "cargo build --release"
     BINARY="$PROJECT_DIR/target/release/linux-clip-convert"
 else
     in_container "cargo build"

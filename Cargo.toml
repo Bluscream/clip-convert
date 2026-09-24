@@ -46,7 +46,9 @@ gtk = "0.18"
 glib = "0.18"
 evdev = "0.12"
 notify-rust = "4"
-single-instance = "0.3"
+fs2 = "0.4"
+signal-hook = "0.3"
+zbus = "5"
 tokio = { version = "1", features = ["rt"] }
 
 [profile.release]
