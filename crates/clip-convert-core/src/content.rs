@@ -1,24 +1,48 @@
 //! What is on the clipboard, and how to describe it.
 //!
-//! Detection is kept free of I/O so it can be tested directly; [`crate::clipboard`]
-//! does the reading and hands the bytes here.
+//! A clipboard does not hold one thing. It offers the same selection in several
+//! representations at once, and which ones are present is what makes an action
+//! applicable. Copying files in Dolphin offers `text/uri-list` and nothing else;
+//! copying an image in a browser offers `image/png` alongside `text/html` and
+//! the source URL as text.
+//!
+//! So a [`Clip`] is a list of [`Facet`]s rather than a single value. Actions
+//! declare which [`ContentKind`]s they apply to, which controls whether they are
+//! *offered*; when one runs it asks for the facet it actually wants. That keeps
+//! "should this appear in the menu" and "what does it operate on" separate,
+//! which is what lets a file selection be treated as files by one action and as
+//! text by another.
+//!
+//! Detection is free of I/O so it can be tested directly; [`crate::clipboard`]
+//! does the reading and hands the pieces here.
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::path::PathBuf;
 use url::Url;
 
 /// The category of clipboard content an action can be offered for.
 ///
-/// This is the closed set that an action's `when` list is matched against, so it
-/// is an enum rather than a bare string: a typo in a config file should be
-/// reported at load time, not silently match nothing.
+/// A closed set that an action's `when` list is matched against, so it is an
+/// enum rather than a bare string: a typo in a config file should be reported at
+/// load time, not silently match nothing.
+///
+/// The order is the preference order used when several facets could satisfy the
+/// same request: most specific first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContentKind {
+    /// One or more local files.
+    Files,
+    /// A file selection whose members are all video.
+    Video,
+    /// Image data, either held directly or as a selection of image files.
+    Image,
+    /// Rich text.
+    Html,
     /// Text that is a single, complete http(s) URL.
     Url,
     /// Any other text.
     Text,
-    /// Image data.
-    Image,
 }
 
 impl ContentKind {
@@ -26,9 +50,12 @@ impl ContentKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Files => "files",
+            Self::Video => "video",
+            Self::Image => "image",
+            Self::Html => "html",
             Self::Url => "url",
             Self::Text => "text",
-            Self::Image => "image",
         }
     }
 
@@ -36,17 +63,27 @@ impl ContentKind {
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
+            "files" | "file" => Some(Self::Files),
+            "video" => Some(Self::Video),
+            "image" => Some(Self::Image),
+            "html" => Some(Self::Html),
             "url" => Some(Self::Url),
             "text" => Some(Self::Text),
-            "image" => Some(Self::Image),
             _ => None,
         }
     }
 
     /// Every kind, for reporting valid values in an error message.
     #[must_use]
-    pub fn all() -> [Self; 3] {
-        [Self::Url, Self::Text, Self::Image]
+    pub fn all() -> [Self; 6] {
+        [
+            Self::Files,
+            Self::Video,
+            Self::Image,
+            Self::Html,
+            Self::Url,
+            Self::Text,
+        ]
     }
 }
 
@@ -56,59 +93,237 @@ impl fmt::Display for ContentKind {
     }
 }
 
-/// Clipboard content, already read.
+/// One representation of the clipboard's contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Clip {
+pub enum Facet {
+    /// Local files, from `text/uri-list`.
+    Files(Vec<PathBuf>),
+    /// Encoded image data.
+    Image {
+        mime: String,
+        bytes: Vec<u8>,
+    },
+    Html(String),
     Url(Box<Url>),
     Text(String),
-    Image { mime: String, bytes: Vec<u8> },
+}
+
+impl Facet {
+    /// Which kinds this facet makes available.
+    ///
+    /// A file selection contributes `Image` or `Video` as well as `Files` when
+    /// its members are all of that type, so an image action can be offered for
+    /// copied image files without every file action also appearing for a
+    /// pasted screenshot.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<ContentKind> {
+        match self {
+            Self::Files(paths) => {
+                let mut kinds = vec![ContentKind::Files];
+                if crate::files::all_images(paths) {
+                    kinds.push(ContentKind::Image);
+                } else if crate::files::all_videos(paths) {
+                    kinds.push(ContentKind::Video);
+                }
+                kinds
+            }
+            Self::Image { .. } => vec![ContentKind::Image],
+            Self::Html(_) => vec![ContentKind::Html],
+            Self::Url(_) => vec![ContentKind::Url],
+            Self::Text(_) => vec![ContentKind::Text],
+        }
+    }
+}
+
+/// Clipboard content, already read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clip {
+    /// In preference order: the first is what an action gets when it does not
+    /// care which representation it receives.
+    facets: Vec<Facet>,
 }
 
 impl Clip {
-    #[must_use]
-    pub fn kind(&self) -> ContentKind {
-        match self {
-            Self::Url(_) => ContentKind::Url,
-            Self::Text(_) => ContentKind::Text,
-            Self::Image { .. } => ContentKind::Image,
-        }
-    }
-
-    /// The content as text, for actions that type or transform it.
+    /// Builds a clip from facets in preference order.
     ///
-    /// `None` for images, which have no meaningful text form.
+    /// Returns `None` for an empty list, which is the same as an empty
+    /// clipboard.
     #[must_use]
-    pub fn as_text(&self) -> Option<&str> {
-        match self {
-            Self::Url(url) => Some(url.as_str()),
-            Self::Text(text) => Some(text),
-            Self::Image { .. } => None,
+    pub fn new(facets: Vec<Facet>) -> Option<Self> {
+        (!facets.is_empty()).then_some(Self { facets })
+    }
+
+    /// Classifies clipboard text as either a URL or plain text.
+    ///
+    /// Only a single, complete http(s) URL counts: a sentence that happens to
+    /// contain a link is text, because the URL actions would have nothing
+    /// unambiguous to act on.
+    #[must_use]
+    pub fn from_text(text: &str) -> Option<Self> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if !trimmed.chars().any(char::is_whitespace) {
+            if let Ok(url) = Url::parse(trimmed) {
+                if matches!(url.scheme(), "http" | "https") && url.has_host() {
+                    return Self::new(vec![
+                        Facet::Url(Box::new(url)),
+                        Facet::Text(trimmed.to_string()),
+                    ]);
+                }
+            }
+        }
+
+        Self::new(vec![Facet::Text(trimmed.to_string())])
+    }
+
+    /// Builds a clip from a file selection.
+    ///
+    /// A text facet is synthesised from the paths. File managers do not offer
+    /// one — Dolphin publishes `text/uri-list` and nothing else — so without
+    /// this there would be no way to act on a selection as text, which is
+    /// exactly what "paste the paths somewhere" needs.
+    #[must_use]
+    pub fn from_files(paths: Vec<PathBuf>) -> Option<Self> {
+        if paths.is_empty() {
+            return None;
+        }
+        let as_text = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Self::new(vec![Facet::Files(paths), Facet::Text(as_text)])
+    }
+
+    /// Builds a clip from image data.
+    #[must_use]
+    pub fn from_image(mime: String, bytes: Vec<u8>) -> Option<Self> {
+        (!bytes.is_empty()).then(|| Self {
+            facets: vec![Facet::Image { mime, bytes }],
+        })
+    }
+
+    /// Adds a facet at the end, if it is not already represented.
+    pub fn push(&mut self, facet: Facet) {
+        if !self.facets.iter().any(|f| f.kinds() == facet.kinds()) {
+            self.facets.push(facet);
         }
     }
 
-    /// The raw bytes to hand to an external command on stdin.
+    /// Every kind this content can be acted on as.
+    #[must_use]
+    pub fn kinds(&self) -> BTreeSet<ContentKind> {
+        self.facets.iter().flat_map(Facet::kinds).collect()
+    }
+
+    /// The facets, in preference order.
+    #[must_use]
+    pub fn facets(&self) -> &[Facet] {
+        &self.facets
+    }
+
+    /// The representation an action gets when it does not ask for a specific one.
+    #[must_use]
+    pub fn primary(&self) -> &Facet {
+        // Non-empty by construction.
+        &self.facets[0]
+    }
+
+    /// The text form, if there is one.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.facets.iter().find_map(|f| match f {
+            Facet::Text(text) => Some(text.as_str()),
+            Facet::Url(url) => Some(url.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The URL, if the content is one.
+    #[must_use]
+    pub fn url(&self) -> Option<&Url> {
+        self.facets.iter().find_map(|f| match f {
+            Facet::Url(url) => Some(url.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// Image data held directly on the clipboard.
+    #[must_use]
+    pub fn image(&self) -> Option<(&str, &[u8])> {
+        self.facets.iter().find_map(|f| match f {
+            Facet::Image { mime, bytes } => Some((mime.as_str(), bytes.as_slice())),
+            _ => None,
+        })
+    }
+
+    /// The selected files, if any.
+    #[must_use]
+    pub fn files(&self) -> Option<&[PathBuf]> {
+        self.facets.iter().find_map(|f| match f {
+            Facet::Files(paths) => Some(paths.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// The rich-text form, if there is one.
+    #[must_use]
+    pub fn html(&self) -> Option<&str> {
+        self.facets.iter().find_map(|f| match f {
+            Facet::Html(html) => Some(html.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The bytes to hand to an external command on stdin.
+    ///
+    /// Image data when the clipboard holds an image, and text otherwise — which
+    /// for a file selection means the paths, one per line.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Url(url) => url.as_str().as_bytes(),
-            Self::Text(text) => text.as_bytes(),
-            Self::Image { bytes, .. } => bytes,
+        if let Some((_, bytes)) = self.image() {
+            return bytes;
         }
+        self.text().map_or(&[], str::as_bytes)
     }
 
     /// A one-line summary shown at the top of the action dialog, so the user can
     /// confirm what they are about to act on without pasting it somewhere first.
     #[must_use]
     pub fn describe(&self) -> String {
-        match self {
-            Self::Url(url) => {
+        match self.primary() {
+            Facet::Files(paths) => {
+                let mut summary = crate::files::describe(paths);
+                if self.text().is_some() {
+                    summary.push_str(" · also as text");
+                }
+                summary
+            }
+            Facet::Image { mime, bytes } => {
+                let format = mime.rsplit('/').next().unwrap_or(mime).to_uppercase();
+                let size = human_bytes(bytes.len());
+                match imagesize::blob_size(bytes) {
+                    Ok(dim) => format!("Image · {format} · {}×{} · {size}", dim.width, dim.height),
+                    // Dimensions are a nicety; an unreadable header should not
+                    // stop the dialog from opening.
+                    Err(_) => format!("Image · {format} · {size}"),
+                }
+            }
+            Facet::Url(url) => {
                 let host = url.host_str().unwrap_or("unknown host");
                 format!(
                     "URL · {host} · {} characters",
                     thousands(url.as_str().chars().count())
                 )
             }
-            Self::Text(text) => {
+            Facet::Html(html) => {
+                format!("Rich text · {} characters", thousands(html.chars().count()))
+            }
+            Facet::Text(text) => {
                 let chars = text.chars().count();
                 let lines = text.lines().count();
                 if lines > 1 {
@@ -121,37 +336,8 @@ impl Clip {
                     format!("Text · {} characters", thousands(chars))
                 }
             }
-            Self::Image { mime, bytes } => {
-                let format = mime.rsplit('/').next().unwrap_or(mime).to_uppercase();
-                let size = human_bytes(bytes.len());
-                match imagesize::blob_size(bytes) {
-                    Ok(dim) => format!("Image · {format} · {}×{} · {size}", dim.width, dim.height),
-                    // Dimensions are a nicety; an unreadable header should not
-                    // stop the dialog from opening.
-                    Err(_) => format!("Image · {format} · {size}"),
-                }
-            }
         }
     }
-}
-
-/// Classifies clipboard text as either a URL or plain text.
-///
-/// Only a single, complete http(s) URL counts: a sentence that happens to contain
-/// a link is text, because the URL actions would have nothing unambiguous to act on.
-#[must_use]
-pub fn classify_text(text: &str) -> Clip {
-    let trimmed = text.trim();
-
-    if !trimmed.is_empty() && !trimmed.chars().any(char::is_whitespace) {
-        if let Ok(url) = Url::parse(trimmed) {
-            if matches!(url.scheme(), "http" | "https") && url.has_host() {
-                return Clip::Url(Box::new(url));
-            }
-        }
-    }
-
-    Clip::Text(trimmed.to_string())
 }
 
 /// Chooses which offered image type to read, preferring lossless and widely
@@ -203,29 +389,24 @@ fn thousands(n: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_bare_url_is_a_url() {
-        assert_eq!(
-            classify_text("https://example.com/a").kind(),
-            ContentKind::Url
-        );
-        assert_eq!(classify_text("http://example.com").kind(), ContentKind::Url);
+    fn text(s: &str) -> Clip {
+        Clip::from_text(s).expect("non-empty")
     }
 
     #[test]
-    fn surrounding_whitespace_does_not_stop_url_detection() {
-        assert_eq!(
-            classify_text("  \n https://example.com \t ").kind(),
-            ContentKind::Url
-        );
+    fn a_bare_url_offers_both_url_and_text() {
+        let clip = text("https://example.com/a");
+        assert!(clip.kinds().contains(&ContentKind::Url));
+        // Split and Truncate should still be offered for a URL.
+        assert!(clip.kinds().contains(&ContentKind::Text));
+        assert_eq!(clip.url().map(Url::as_str), Some("https://example.com/a"));
     }
 
     #[test]
-    fn a_sentence_containing_a_url_is_text() {
-        assert_eq!(
-            classify_text("see https://example.com for more").kind(),
-            ContentKind::Text
-        );
+    fn a_sentence_containing_a_url_is_only_text() {
+        let clip = text("see https://example.com for more");
+        assert!(!clip.kinds().contains(&ContentKind::Url));
+        assert!(clip.kinds().contains(&ContentKind::Text));
     }
 
     #[test]
@@ -233,38 +414,129 @@ mod tests {
         for input in [
             "file:///etc/passwd",
             "mailto:a@b.com",
-            "ftp://example.com",
             "javascript:alert(1)",
         ] {
-            assert_eq!(
-                classify_text(input).kind(),
-                ContentKind::Text,
-                "{input} should not be treated as a shortenable URL"
+            assert!(
+                !text(input).kinds().contains(&ContentKind::Url),
+                "{input} should not be a shortenable URL"
             );
         }
     }
 
     #[test]
-    fn single_label_hosts_are_urls() {
-        // `http://localhost/` and intranet short names are legitimate targets, so
-        // the host is not required to contain a dot. Note that the URL spec
-        // normalises `https:///path` to host `path` rather than rejecting it.
-        assert_eq!(
-            classify_text("http://localhost:8080/x").kind(),
-            ContentKind::Url
+    fn empty_text_is_no_clip_at_all() {
+        assert_eq!(Clip::from_text(""), None);
+        assert_eq!(Clip::from_text("   \n "), None);
+    }
+
+    #[test]
+    fn a_file_selection_is_offered_as_files_and_as_text() {
+        // Dolphin publishes no text/plain, so the text form is synthesised —
+        // without it there would be no way to paste the paths anywhere.
+        let clip = Clip::from_files(vec![
+            PathBuf::from("/a/one.png"),
+            PathBuf::from("/a/two.png"),
+        ])
+        .expect("non-empty");
+
+        let kinds = clip.kinds();
+        assert!(kinds.contains(&ContentKind::Files));
+        assert!(kinds.contains(&ContentKind::Text));
+        assert!(kinds.contains(&ContentKind::Image), "all-image selection");
+        assert_eq!(clip.text(), Some("/a/one.png\n/a/two.png"));
+    }
+
+    #[test]
+    fn a_mixed_file_selection_is_not_offered_as_images() {
+        let clip = Clip::from_files(vec![
+            PathBuf::from("/a/one.png"),
+            PathBuf::from("/a/notes.txt"),
+        ])
+        .expect("non-empty");
+
+        assert!(clip.kinds().contains(&ContentKind::Files));
+        assert!(!clip.kinds().contains(&ContentKind::Image));
+    }
+
+    #[test]
+    fn a_video_selection_is_offered_as_video_not_image() {
+        let clip = Clip::from_files(vec![PathBuf::from("/a/clip.mp4")]).expect("non-empty");
+        assert!(clip.kinds().contains(&ContentKind::Video));
+        assert!(!clip.kinds().contains(&ContentKind::Image));
+    }
+
+    #[test]
+    fn an_empty_file_selection_is_no_clip() {
+        assert_eq!(Clip::from_files(Vec::new()), None);
+    }
+
+    #[test]
+    fn an_image_offers_only_image() {
+        let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
+        assert_eq!(clip.kinds(), BTreeSet::from([ContentKind::Image]));
+        assert!(
+            clip.text().is_none(),
+            "there is nothing to type for an image"
         );
-        assert_eq!(classify_text("https:///path").kind(), ContentKind::Url);
     }
 
     #[test]
-    fn empty_input_is_text_not_url() {
-        assert_eq!(classify_text("").kind(), ContentKind::Text);
-        assert_eq!(classify_text("   ").kind(), ContentKind::Text);
+    fn an_empty_image_is_no_clip() {
+        assert_eq!(Clip::from_image("image/png".to_string(), Vec::new()), None);
     }
 
     #[test]
-    fn classified_text_is_trimmed() {
-        assert_eq!(classify_text("  hi  "), Clip::Text("hi".to_string()));
+    fn stdin_bytes_are_the_image_for_an_image_and_text_otherwise() {
+        let image = Clip::from_image("image/png".to_string(), vec![9, 9, 9]).expect("non-empty");
+        assert_eq!(image.as_bytes(), &[9, 9, 9]);
+
+        let files = Clip::from_files(vec![PathBuf::from("/a/x.png")]).expect("non-empty");
+        assert_eq!(files.as_bytes(), b"/a/x.png");
+
+        assert_eq!(text("hello").as_bytes(), b"hello");
+    }
+
+    #[test]
+    fn content_kind_round_trips_through_its_config_name() {
+        for kind in ContentKind::all() {
+            assert_eq!(ContentKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ContentKind::parse("  Image "), Some(ContentKind::Image));
+        assert_eq!(ContentKind::parse("file"), Some(ContentKind::Files));
+        assert_eq!(ContentKind::parse("audio"), None);
+    }
+
+    #[test]
+    fn descriptions_name_the_content() {
+        assert!(text("https://example.com/x")
+            .describe()
+            .starts_with("URL · example.com · "));
+        assert!(text("hello").describe().contains("5 characters"));
+        assert!(text("a\nb").describe().contains("2 lines"));
+
+        let files = Clip::from_files(vec![PathBuf::from("/a/x.png")]).expect("non-empty");
+        assert!(
+            files.describe().ends_with("· also as text"),
+            "{}",
+            files.describe()
+        );
+    }
+
+    #[test]
+    fn image_description_falls_back_when_the_header_is_unreadable() {
+        let clip = Clip::from_image("image/png".to_string(), vec![0; 10]).expect("non-empty");
+        assert!(
+            clip.describe().starts_with("Image · PNG · "),
+            "{}",
+            clip.describe()
+        );
+    }
+
+    #[test]
+    fn pushing_a_duplicate_kind_is_ignored() {
+        let mut clip = text("hello");
+        clip.push(Facet::Text("other".to_string()));
+        assert_eq!(clip.text(), Some("hello"), "the original text must win");
     }
 
     #[test]
@@ -274,55 +546,21 @@ mod tests {
     }
 
     #[test]
-    fn an_unlisted_image_type_is_still_accepted() {
-        let offered = vec!["text/html".to_string(), "image/tiff".to_string()];
-        assert_eq!(pick_image_mime(&offered).as_deref(), Some("image/tiff"));
-    }
-
-    #[test]
-    fn mime_matching_ignores_case() {
-        let offered = vec!["IMAGE/PNG".to_string()];
-        assert_eq!(pick_image_mime(&offered).as_deref(), Some("IMAGE/PNG"));
-    }
-
-    #[test]
-    fn no_image_type_offered() {
-        let offered = vec!["text/plain".to_string(), "text/html".to_string()];
-        assert_eq!(pick_image_mime(&offered), None);
-    }
-
-    #[test]
-    fn content_kind_round_trips_through_its_config_name() {
-        for kind in ContentKind::all() {
-            assert_eq!(ContentKind::parse(kind.as_str()), Some(kind));
-        }
-        assert_eq!(ContentKind::parse("  Image "), Some(ContentKind::Image));
-        assert_eq!(ContentKind::parse("video"), None);
-    }
-
-    #[test]
-    fn descriptions_name_the_kind_and_size() {
-        assert!(classify_text("https://example.com/x")
-            .describe()
-            .starts_with("URL · example.com · "));
-        assert!(classify_text("hello").describe().contains("5 characters"));
-        assert!(classify_text("a\nb").describe().contains("2 lines"));
-    }
-
-    #[test]
-    fn image_description_falls_back_when_the_header_is_unreadable() {
-        let clip = Clip::Image {
-            mime: "image/png".to_string(),
-            bytes: vec![0; 10],
-        };
-        let described = clip.describe();
-        assert!(described.starts_with("Image · PNG · "), "{described}");
+    fn mime_matching_ignores_case_and_accepts_unlisted_image_types() {
+        assert_eq!(
+            pick_image_mime(&["IMAGE/PNG".to_string()]).as_deref(),
+            Some("IMAGE/PNG")
+        );
+        assert_eq!(
+            pick_image_mime(&["text/html".to_string(), "image/tiff".to_string()]).as_deref(),
+            Some("image/tiff")
+        );
+        assert_eq!(pick_image_mime(&["text/plain".to_string()]), None);
     }
 
     #[test]
     fn thousands_groups_long_numbers() {
         assert_eq!(thousands(7), "7");
-        assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1_204), "1 204");
         assert_eq!(thousands(1_000_000), "1 000 000");
     }

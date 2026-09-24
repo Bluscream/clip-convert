@@ -124,7 +124,10 @@ pub enum ActionError {
     #[error("action `{id}` has an empty `id` or `label`")]
     Unnamed { id: String },
     #[error(
-        "action `{id}` has unknown content kind `{kind}` in `when` (valid: url, text, image, any)"
+        "action `{id}` has unknown content kind `{kind}` in `when` (valid: {}, any)",
+        crate::content::ContentKind::all()
+            .map(crate::content::ContentKind::as_str)
+            .join(", ")
     )]
     UnknownKind { id: String, kind: String },
     #[error("duplicate action id `{id}`")]
@@ -171,10 +174,14 @@ impl Action {
         })
     }
 
-    /// Whether this action should appear for the given content.
+    /// Whether this action should appear for content offering `available`.
+    ///
+    /// A clipboard offers several kinds at once — a file selection is also
+    /// text, and a copied image may carry its source URL — so an action is
+    /// offered when *any* of them matches.
     #[must_use]
-    pub fn applies_to(&self, kind: ContentKind) -> bool {
-        self.kinds.contains(&kind)
+    pub fn applies_to(&self, available: &BTreeSet<ContentKind>) -> bool {
+        !self.kinds.is_disjoint(available)
     }
 }
 
@@ -218,10 +225,10 @@ pub fn validate_all(specs: &[ActionSpec]) -> Result<Vec<Action>, ActionError> {
     Ok(actions)
 }
 
-/// The actions to offer for the given content, in config order.
+/// The actions to offer for content of the given kinds, in config order.
 #[must_use]
-pub fn for_kind(actions: &[Action], kind: ContentKind) -> Vec<&Action> {
-    actions.iter().filter(|a| a.applies_to(kind)).collect()
+pub fn for_kinds<'a>(actions: &'a [Action], available: &BTreeSet<ContentKind>) -> Vec<&'a Action> {
+    actions.iter().filter(|a| a.applies_to(available)).collect()
 }
 
 #[cfg(test)]
@@ -245,7 +252,7 @@ mod tests {
     fn an_empty_when_list_means_every_kind() {
         let action = Action::from_spec(&spec("a")).expect("valid");
         for kind in ContentKind::all() {
-            assert!(action.applies_to(kind));
+            assert!(action.applies_to(&BTreeSet::from([kind])));
         }
     }
 
@@ -254,7 +261,7 @@ mod tests {
         let mut s = spec("a");
         s.when = vec!["any".to_string()];
         let action = Action::from_spec(&s).expect("valid");
-        assert_eq!(action.kinds.len(), 3);
+        assert_eq!(action.kinds.len(), ContentKind::all().len());
     }
 
     #[test]
@@ -262,22 +269,26 @@ mod tests {
         let mut s = spec("a");
         s.when = vec!["url".to_string()];
         let action = Action::from_spec(&s).expect("valid");
-        assert!(action.applies_to(ContentKind::Url));
-        assert!(!action.applies_to(ContentKind::Text));
-        assert!(!action.applies_to(ContentKind::Image));
+        assert!(action.applies_to(&BTreeSet::from([ContentKind::Url])));
+        assert!(!action.applies_to(&BTreeSet::from([ContentKind::Text])));
+        assert!(!action.applies_to(&BTreeSet::from([ContentKind::Image])));
     }
 
     #[test]
     fn an_unknown_kind_is_rejected_by_name() {
         let mut s = spec("a");
-        s.when = vec!["video".to_string()];
+        s.when = vec!["audio".to_string()];
         assert_eq!(
             Action::from_spec(&s),
             Err(ActionError::UnknownKind {
                 id: "a".to_string(),
-                kind: "video".to_string()
+                kind: "audio".to_string()
             })
         );
+        // The message must name the kinds that would have worked.
+        let message = Action::from_spec(&s).expect_err("unknown").to_string();
+        assert!(message.contains("files"), "{message}");
+        assert!(message.contains("video"), "{message}");
     }
 
     #[test]
@@ -351,13 +362,13 @@ mod tests {
         url_only.when = vec!["url".to_string()];
         let actions = validate_all(&[spec("first"), url_only, spec("third")]).expect("valid");
 
-        let offered: Vec<&str> = for_kind(&actions, ContentKind::Url)
+        let offered: Vec<&str> = for_kinds(&actions, &BTreeSet::from([ContentKind::Url]))
             .iter()
             .map(|a| a.id.as_str())
             .collect();
         assert_eq!(offered, ["first", "second", "third"]);
 
-        let offered: Vec<&str> = for_kind(&actions, ContentKind::Text)
+        let offered: Vec<&str> = for_kinds(&actions, &BTreeSet::from([ContentKind::Text]))
             .iter()
             .map(|a| a.id.as_str())
             .collect();

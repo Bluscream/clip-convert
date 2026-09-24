@@ -654,6 +654,7 @@ dependencies = [
  "url",
  "wait-timeout",
  "webp",
+ "wl-clipboard-rs",
 ]
 
 [[package]]

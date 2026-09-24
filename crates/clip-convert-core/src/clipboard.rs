@@ -14,12 +14,15 @@
 //! to receive on stdin and what the resize pipeline reads; conversion happens
 //! here, at the boundary.
 
-use crate::content::{self, Clip};
+use crate::content::{Clip, Facet};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 /// How often the fallback watcher checks for a change.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// The MIME type a file manager publishes a selection as.
+const URI_LIST: &str = "text/uri-list";
 
 /// How long to wait for a clipboard write to start being served.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -34,6 +37,10 @@ pub enum ClipboardError {
     Image(#[source] image::ImageError),
     #[error("the clipboard did not become available")]
     Unavailable,
+    #[error("could not put files on the clipboard: {0}")]
+    Files(String),
+    #[error("putting files on the clipboard is not supported on this platform yet")]
+    NoFileSupport,
     #[error("could not start the clipboard watcher: {0}")]
     Watch(#[source] std::io::Error),
 }
@@ -45,39 +52,142 @@ fn open() -> Result<arboard::Clipboard, ClipboardError> {
 
 /// Reads the current clipboard contents and classifies them.
 ///
-/// Images are preferred over text: an application that offers both is usually
-/// offering a filename or a URL alongside the actual picture.
+/// Facets are gathered in preference order. Files come first, because a file
+/// manager publishes only `text/uri-list` and nothing else. Images come next,
+/// and any text or HTML alongside them is kept as a further facet rather than
+/// discarded — copying an image from Discord offers `image/png` together with
+/// an `<img src="…">`, and both are worth acting on.
 ///
 /// # Errors
 ///
 /// Returns [`ClipboardError::Empty`] when there is nothing usable on the
 /// clipboard.
 pub fn read() -> Result<Clip, ClipboardError> {
+    if let Some(clip) = read_files() {
+        return Ok(clip);
+    }
+
     let mut clipboard = open()?;
 
-    if let Ok(image) = clipboard.get_image() {
-        return encode_clipboard_image(&image);
+    let mut clip = match clipboard.get_image() {
+        Ok(image) => encode_clipboard_image(&image)?,
+        Err(_) => None,
+    };
+
+    // Text is read whether or not an image was found: it may be a caption, a
+    // source URL, or the real content.
+    if let Ok(text) = clipboard.get_text() {
+        match clip.as_mut() {
+            Some(clip) => {
+                if let Some(extra) = Clip::from_text(&text) {
+                    for facet in extra.facets() {
+                        clip.push(facet.clone());
+                    }
+                }
+            }
+            None => clip = Clip::from_text(&text),
+        }
     }
 
-    match clipboard.get_text() {
-        Ok(text) if !text.trim().is_empty() => Ok(content::classify_text(&text)),
-        _ => Err(ClipboardError::Empty),
+    // A single `<img src="…">` is how several chat clients describe an image
+    // they have just put on the clipboard, and that source URL is worth
+    // offering even though the image is the primary content.
+    if let Some(clip) = clip.as_mut() {
+        if let Some(url) = read_html().as_deref().and_then(source_url) {
+            clip.push(Facet::Url(Box::new(url)));
+        }
     }
+
+    clip.ok_or(ClipboardError::Empty)
+}
+
+/// Extracts the source URL from an HTML fragment that is just one image.
+///
+/// Deliberately narrow: anything more than a single image tag is a document,
+/// not a reference to one thing, and guessing which of its links was meant
+/// would be wrong.
+fn source_url(html: &str) -> Option<url::Url> {
+    let trimmed = html.trim();
+    if !trimmed.starts_with("<img") || trimmed.matches("<img").count() != 1 {
+        return None;
+    }
+
+    let rest = trimmed.split_once("src=\"")?.1;
+    let candidate = rest.split_once('"')?.0;
+    let url = url::Url::parse(candidate).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
+}
+
+/// Reads `text/html`, where the platform can.
+#[cfg(target_os = "linux")]
+fn read_html() -> Option<String> {
+    read_mime("text/html")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_html() -> Option<String> {
+    None
+}
+
+/// Reads a file selection, if the clipboard holds one.
+///
+/// Returns `None` where the platform's file-list format is not implemented,
+/// which is currently everywhere but Linux.
+#[cfg(target_os = "linux")]
+fn read_files() -> Option<Clip> {
+    let body = read_mime(URI_LIST)?;
+    let paths = crate::files::parse_uri_list(&body);
+    if paths.is_empty() {
+        return None;
+    }
+    log::debug!("clipboard holds {} file(s)", paths.len());
+    Clip::from_files(paths)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_files() -> Option<Clip> {
+    // Windows uses CF_HDROP and macOS NSFilenamesPboardType; neither is wired
+    // up yet, so a file selection falls through to text or image.
+    None
+}
+
+/// Reads one specific MIME type.
+///
+/// `arboard` handles only text and images, and `text/uri-list` is the sole
+/// thing a file manager publishes, so this goes to the protocol directly.
+#[cfg(target_os = "linux")]
+fn read_mime(mime: &str) -> Option<String> {
+    use wl_clipboard_rs::paste::{get_contents, ClipboardType, MimeType, Seat};
+
+    let (mut reader, _) = get_contents(
+        ClipboardType::Regular,
+        Seat::Unspecified,
+        MimeType::Specific(mime),
+    )
+    .ok()?;
+
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut body).ok()?;
+    (!body.trim().is_empty()).then_some(body)
 }
 
 /// Turns the platform's raw RGBA into the PNG this app passes around.
-fn encode_clipboard_image(image: &arboard::ImageData<'_>) -> Result<Clip, ClipboardError> {
+///
+/// Returns `Ok(None)` for an unusable buffer, which is an ordinary state rather
+/// than a failure.
+fn encode_clipboard_image(image: &arboard::ImageData<'_>) -> Result<Option<Clip>, ClipboardError> {
     let width = u32::try_from(image.width).unwrap_or(0);
     let height = u32::try_from(image.height).unwrap_or(0);
 
     // A zero-sized buffer is a valid RgbaImage, so it would otherwise encode
     // happily into a 0x0 PNG that nothing downstream can use.
     if width == 0 || height == 0 {
-        return Err(ClipboardError::Empty);
+        return Ok(None);
     }
 
-    let buffer = image::RgbaImage::from_raw(width, height, image.bytes.to_vec())
-        .ok_or(ClipboardError::Empty)?;
+    let Some(buffer) = image::RgbaImage::from_raw(width, height, image.bytes.to_vec()) else {
+        return Ok(None);
+    };
 
     // Quality 95 keeps the PNG truecolour: this is an intermediate
     // representation, so it must not lose anything before the user has chosen
@@ -89,10 +199,7 @@ fn encode_clipboard_image(image: &arboard::ImageData<'_>) -> Result<Clip, Clipbo
     )
     .map_err(|e| ClipboardError::Image(image_error(&e)))?;
 
-    Ok(Clip::Image {
-        mime: "image/png".to_string(),
-        bytes,
-    })
+    Ok(Clip::from_image("image/png".to_string(), bytes))
 }
 
 /// Bridges an encode failure into the error type this module reports.
@@ -215,6 +322,44 @@ fn set_image(
     image: arboard::ImageData<'static>,
 ) -> Result<(), arboard::Error> {
     clipboard.set_image(image)
+}
+
+/// Puts a file selection on the clipboard, so it can be pasted into a file
+/// manager or any application that accepts dropped files.
+///
+/// # Errors
+///
+/// Returns [`ClipboardError::NoFileSupport`] on platforms where publishing a
+/// file list is not implemented.
+#[cfg(target_os = "linux")]
+pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
+    use wl_clipboard_rs::copy::{copy, MimeType, Options, ServeRequests, Source};
+
+    let body = crate::files::to_uri_list(paths);
+    if body.is_empty() {
+        return Err(ClipboardError::Empty);
+    }
+
+    let mut options = Options::new();
+    // Served until something else takes the clipboard, from a forked child, so
+    // the selection survives this function returning.
+    options.serve_requests(ServeRequests::Unlimited);
+    options.foreground(false);
+
+    copy(
+        options,
+        Source::Bytes(body.into_bytes().into()),
+        MimeType::Specific(URI_LIST.to_string()),
+    )
+    .map_err(|e| ClipboardError::Files(e.to_string()))?;
+
+    log::debug!("wrote {} file(s) to the clipboard", paths.len());
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn write_files(_paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
+    Err(ClipboardError::NoFileSupport)
 }
 
 /// Keeps a clipboard watcher running.
@@ -399,18 +544,13 @@ mod tests {
             bytes: std::borrow::Cow::Owned(pixels),
         };
 
-        let clip = encode_clipboard_image(&data).expect("converts");
-        match clip {
-            Clip::Image {
-                ref mime,
-                ref bytes,
-            } => {
-                assert_eq!(mime, "image/png");
-                let decoded = image::load_from_memory(bytes).expect("valid png");
-                assert_eq!((decoded.width(), decoded.height()), (8, 8));
-            }
-            other => panic!("expected an image, got {other:?}"),
-        }
+        let clip = encode_clipboard_image(&data)
+            .expect("converts")
+            .expect("not empty");
+        let (mime, bytes) = clip.image().expect("an image facet");
+        assert_eq!(mime, "image/png");
+        let decoded = image::load_from_memory(bytes).expect("valid png");
+        assert_eq!((decoded.width(), decoded.height()), (8, 8));
     }
 
     #[test]
@@ -420,10 +560,7 @@ mod tests {
             height: 0,
             bytes: std::borrow::Cow::Owned(Vec::new()),
         };
-        assert!(matches!(
-            encode_clipboard_image(&data),
-            Err(ClipboardError::Empty)
-        ));
+        assert!(matches!(encode_clipboard_image(&data), Ok(None)));
     }
 
     #[test]
@@ -434,10 +571,7 @@ mod tests {
             height: 100,
             bytes: std::borrow::Cow::Owned(vec![0; 16]),
         };
-        assert!(matches!(
-            encode_clipboard_image(&data),
-            Err(ClipboardError::Empty)
-        ));
+        assert!(matches!(encode_clipboard_image(&data), Ok(None)));
     }
 
     #[test]

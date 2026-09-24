@@ -9,7 +9,6 @@ use crate::prompt::Prompter;
 use anyhow::{Context, Result};
 use clipconv::action::Action;
 use clipconv::config::{self, Config};
-use clipconv::content::Clip;
 use clipconv::{auto, clipboard, runner, shorten, typing};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -166,11 +165,19 @@ impl App {
 
         let config = self.config();
         let actions = self.actions();
-        let offered = clipconv::action::for_kind(&actions, clip.kind());
+        let kinds = clip.kinds();
+        let offered = clipconv::action::for_kinds(&actions, &kinds);
         if offered.is_empty() {
             notify(
                 "No actions available",
-                &format!("Nothing is configured for {} content.", clip.kind()),
+                &format!(
+                    "Nothing is configured for {} content.",
+                    kinds
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                ),
             );
             return Ok(());
         }
@@ -180,11 +187,7 @@ impl App {
             .map(|a| (a.id.clone(), a.label.clone()))
             .collect();
 
-        log::debug!(
-            "offering {} actions for {} content",
-            labelled.len(),
-            clip.kind()
-        );
+        log::debug!("offering {} actions for {kinds:?}", labelled.len());
         let Some(choice) =
             prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)
         else {
@@ -217,7 +220,7 @@ impl App {
         // about to see this change, recognises it as our own.
         if outcome.clipboard_changed {
             if let Ok(current) = clipboard::read() {
-                if let Some(text) = current.as_text() {
+                if let Some(text) = current.text() {
                     self.remember_written(text);
                 }
             }
@@ -246,7 +249,10 @@ impl App {
             Err(e) => return Err(e.into()),
         };
 
-        let Clip::Url(url) = clip else {
+        // Only a clipboard that is purely a URL is auto-shortened. A copied
+        // image that merely carries a source URL is not something the user
+        // asked to have rewritten.
+        let Some(url) = clip.url().cloned() else {
             return Ok(());
         };
 

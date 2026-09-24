@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::content::Clip;
 use crate::presets::Preset;
 use crate::{exec, image, shorten, text, typing};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// How long a user-configured command may run.
@@ -56,6 +57,8 @@ pub enum RunError {
     Typing(#[from] typing::TypingError),
     #[error("could not create a temporary file: {0}")]
     TempFile(#[source] std::io::Error),
+    #[error("none of the {total} files could be processed. {first}")]
+    BatchFailed { total: usize, first: String },
 }
 
 /// Runs `action` against `clip`.
@@ -74,7 +77,7 @@ pub fn run(
     config: &Config,
     prompt: &dyn Prompt,
 ) -> Result<Option<Outcome>, RunError> {
-    if !action.applies_to(clip.kind()) {
+    if !action.applies_to(&clip.kinds()) {
         return Err(RunError::WrongKind {
             label: action.label.clone(),
         });
@@ -98,7 +101,7 @@ fn run_builtin(
 ) -> Result<Option<Outcome>, RunError> {
     match builtin {
         Builtin::Type => {
-            let body = clip.as_text().ok_or(RunError::NotTextual)?;
+            let body = clip.text().ok_or(RunError::NotTextual)?;
             typing::type_text(body, &config.commands, config.type_delay_ms)?;
             Ok(Some(Outcome {
                 message: format!("Typed {} characters.", body.chars().count()),
@@ -113,11 +116,9 @@ fn run_builtin(
 }
 
 fn run_shorten(clip: &Clip, config: &Config) -> Result<Option<Outcome>, RunError> {
-    let Clip::Url(url) = clip else {
-        return Err(RunError::WrongKind {
-            label: "Shorten".to_string(),
-        });
-    };
+    let url = clip.url().ok_or_else(|| RunError::WrongKind {
+        label: "Shorten".to_string(),
+    })?;
 
     let available = config.active_shorteners();
     let chosen = shorten::pick(&available).ok_or(shorten::ShortenError::NoneConfigured)?;
@@ -135,7 +136,7 @@ fn run_split(
     config: &Config,
     prompt: &dyn Prompt,
 ) -> Result<Option<Outcome>, RunError> {
-    let body = clip.as_text().ok_or(RunError::NotTextual)?;
+    let body = clip.text().ok_or(RunError::NotTextual)?;
     let Some(limit) = prompt.ask_limit(
         "Split",
         "Send the text in pieces of at most this many characters:",
@@ -173,7 +174,7 @@ fn run_truncate(
     config: &Config,
     prompt: &dyn Prompt,
 ) -> Result<Option<Outcome>, RunError> {
-    let body = clip.as_text().ok_or(RunError::NotTextual)?;
+    let body = clip.text().ok_or(RunError::NotTextual)?;
     let Some(limit) = prompt.ask_limit(
         "Truncate",
         "Shorten the text to at most this many characters:",
@@ -196,20 +197,29 @@ fn run_resize(
     config: &Config,
     prompt: &dyn Prompt,
 ) -> Result<Option<Outcome>, RunError> {
-    let Clip::Image { bytes, .. } = clip else {
-        return Err(RunError::WrongKind {
-            label: "Resize".to_string(),
-        });
-    };
-
     let Some(target) = prompt.ask_resize_target(&config.presets) else {
         return Ok(None);
     };
 
-    let resized = image::resize(bytes, &target)?;
+    // Image data held directly on the clipboard is replaced in place. A
+    // selection of image files is a batch, and its results are written out as
+    // files because a clipboard can only hold one image at a time.
+    if let Some((_, bytes)) = clip.image() {
+        return resize_one(bytes, &target).map(Some);
+    }
+
+    let files = clip.files().ok_or_else(|| RunError::WrongKind {
+        label: "Resize".to_string(),
+    })?;
+    resize_batch(files, &target).map(Some)
+}
+
+/// Replaces the clipboard's image with a resized copy.
+fn resize_one(bytes: &[u8], target: &Preset) -> Result<Outcome, RunError> {
+    let resized = image::resize(bytes, target)?;
     clipboard::write_image(&resized.mime, &resized.bytes)?;
 
-    Ok(Some(Outcome {
+    Ok(Outcome {
         message: format!(
             "Resized to {}×{} ({}) for {}.",
             resized.width,
@@ -218,7 +228,85 @@ fn run_resize(
             target.label
         ),
         clipboard_changed: true,
-    }))
+    })
+}
+
+/// Resizes every file, writing the results out and putting them on the
+/// clipboard as a new selection.
+///
+/// One unreadable file does not abandon the rest: the others are still useful,
+/// and the failures are named in the result rather than swallowed.
+fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Outcome, RunError> {
+    let directory = crate::scratch::output_dir("resize").map_err(RunError::TempFile)?;
+
+    let mut written = Vec::new();
+    let mut failures = Vec::new();
+
+    for source in files {
+        match resize_file(source, target, &directory) {
+            Ok(path) => written.push(path),
+            Err(e) => {
+                log::warn!("resizing {} failed: {e}", source.display());
+                failures.push(format!("{}: {e}", file_label(source)));
+            }
+        }
+    }
+
+    if written.is_empty() {
+        return Err(RunError::BatchFailed {
+            total: files.len(),
+            first: failures.into_iter().next().unwrap_or_default(),
+        });
+    }
+
+    clipboard::write_files(&written)?;
+
+    let mut message = format!(
+        "Resized {} of {} for {}. The results are on the clipboard.",
+        written.len(),
+        files.len(),
+        target.label
+    );
+    if !failures.is_empty() {
+        use std::fmt::Write;
+        let _ = write!(
+            message,
+            "\n{} failed: {}",
+            failures.len(),
+            failures.join("; ")
+        );
+    }
+
+    Ok(Outcome {
+        message,
+        clipboard_changed: true,
+    })
+}
+
+/// Resizes one file of a batch, returning where it was written.
+fn resize_file(
+    source: &PathBuf,
+    target: &Preset,
+    directory: &std::path::Path,
+) -> Result<PathBuf, RunError> {
+    let bytes = std::fs::read(source).map_err(RunError::TempFile)?;
+    let resized = image::resize(&bytes, target)?;
+
+    let output = directory.join(crate::scratch::output_name(
+        source,
+        &target.label,
+        &target.format,
+    ));
+    std::fs::write(&output, &resized.bytes).map_err(RunError::TempFile)?;
+    Ok(output)
+}
+
+/// A file's name, for a message that must stay short.
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("a file")
+        .to_string()
 }
 
 fn run_command(
@@ -237,7 +325,7 @@ fn run_command(
         InputMode::Stdin => stdin = Some(clip.as_bytes()),
         InputMode::Argument => {
             // Appended as one argument, so its contents cannot become more.
-            argv.push(clip.as_text().ok_or(RunError::NotTextual)?.to_string());
+            argv.push(clip.text().ok_or(RunError::NotTextual)?.to_string());
         }
         InputMode::File => {
             let dir = tempfile::tempdir().map_err(RunError::TempFile)?;
@@ -281,11 +369,9 @@ fn run_command(
                 }));
             }
 
-            let mime = if let Clip::Image { mime, .. } = clip {
-                mime.clone()
-            } else {
-                "image/png".to_string()
-            };
+            let mime = clip
+                .image()
+                .map_or_else(|| "image/png".to_string(), |(mime, _)| mime.to_string());
             clipboard::write_image(&mime, &result.stdout)?;
             Ok(Some(Outcome {
                 message: format!(
@@ -354,10 +440,123 @@ mod tests {
         .expect("valid action")
     }
 
+    /// Answers the resize prompt with a fixed target.
+    fn with_target(preset: Preset) -> Canned {
+        Canned {
+            limit: None,
+            target: Some(preset),
+        }
+    }
+
+    fn small_png(path: &std::path::Path, width: u32, height: u32) {
+        let mut img = ::image::RgbaImage::new(width, height);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            let v = u8::try_from((x * 13 + y * 7) % 256).unwrap_or(0);
+            *pixel = ::image::Rgba([v, v, v, 255]);
+        }
+        let bytes = crate::encode::encode(
+            &::image::DynamicImage::ImageRgba8(img),
+            crate::encode::Format::Png,
+            95,
+        )
+        .expect("encodes");
+        std::fs::write(path, bytes).expect("writes");
+    }
+
+    fn preset() -> Preset {
+        Preset {
+            id: "t".to_string(),
+            label: "Test target".to_string(),
+            width: 32,
+            height: 32,
+            max_bytes: 0,
+            format: "png".to_string(),
+            fit: crate::presets::Fit::Inside,
+        }
+    }
+
+    #[test]
+    fn resizing_a_file_selection_writes_every_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sources: Vec<PathBuf> = (0..3)
+            .map(|i| {
+                let path = dir.path().join(format!("shot{i}.png"));
+                small_png(&path, 100, 80);
+                path
+            })
+            .collect();
+
+        let outcome = resize_batch(&sources, &preset()).expect("batch runs");
+        assert!(outcome.clipboard_changed);
+        assert!(
+            outcome.message.contains("Resized 3 of 3"),
+            "{}",
+            outcome.message
+        );
+        assert!(!outcome.message.contains("failed"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn a_batch_reports_the_files_it_could_not_process_without_abandoning_the_rest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let good = dir.path().join("good.png");
+        small_png(&good, 60, 60);
+        let bad = dir.path().join("broken.png");
+        std::fs::write(&bad, b"not an image").expect("writes");
+
+        let outcome = resize_batch(&[good, bad], &preset()).expect("partial success still works");
+        assert!(
+            outcome.message.contains("Resized 1 of 2"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("broken.png"),
+            "{}",
+            outcome.message
+        );
+    }
+
+    #[test]
+    fn a_batch_where_everything_fails_is_an_error_not_a_silent_success() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bad = dir.path().join("broken.png");
+        std::fs::write(&bad, b"not an image").expect("writes");
+
+        let err = resize_batch(&[bad], &preset()).expect_err("nothing succeeded");
+        assert!(
+            matches!(err, RunError::BatchFailed { total: 1, .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn resize_is_offered_for_image_files_and_uses_the_batch_path() {
+        // A file selection contributes the image kind, so the menu offers
+        // Resize; it must then actually work rather than report a wrong kind.
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        let action = builtin_action(Builtin::Resize, &["image"]);
+        assert!(action.applies_to(&clip.kinds()));
+
+        // Cancelling at the prompt proves it reached the resize path rather
+        // than being rejected for the wrong kind.
+        let outcome = run(&action, &clip, &Config::default(), &cancels()).expect("reaches prompt");
+        assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn resizing_text_is_still_refused() {
+        let clip = Clip::from_text("just words").expect("non-empty");
+        let action = builtin_action(Builtin::Resize, &["image"]);
+        let err = run(&action, &clip, &Config::default(), &with_target(preset()))
+            .expect_err("text has no image");
+        assert!(matches!(err, RunError::WrongKind { .. }), "{err:?}");
+    }
+
     #[test]
     fn an_action_refuses_content_it_does_not_apply_to() {
         let action = builtin_action(Builtin::Resize, &["image"]);
-        let clip = Clip::Text("hello".to_string());
+        let clip = Clip::from_text("hello").expect("non-empty");
         let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("wrong kind");
         assert!(matches!(err, RunError::WrongKind { .. }), "{err:?}");
     }
@@ -365,10 +564,7 @@ mod tests {
     #[test]
     fn typing_an_image_reports_that_there_is_nothing_to_type() {
         let action = builtin_action(Builtin::Type, &["any"]);
-        let clip = Clip::Image {
-            mime: "image/png".to_string(),
-            bytes: vec![1, 2, 3],
-        };
+        let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
         let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("no text");
         assert!(matches!(err, RunError::NotTextual), "{err:?}");
         assert!(err.to_string().contains("nothing to type"), "{err}");
@@ -377,7 +573,7 @@ mod tests {
     #[test]
     fn cancelling_a_prompt_is_not_an_error_and_does_nothing() {
         let action = builtin_action(Builtin::Split, &["text"]);
-        let clip = Clip::Text("some text".to_string());
+        let clip = Clip::from_text("some text").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels()).expect("cancel is fine");
         assert_eq!(outcome, None);
     }
@@ -385,8 +581,8 @@ mod tests {
     #[test]
     fn shortening_without_a_configured_backend_says_so() {
         let action = builtin_action(Builtin::Shorten, &["url"]);
-        let clip = crate::content::classify_text("https://example.com/x");
-        assert_eq!(clip.kind(), ContentKind::Url);
+        let clip = Clip::from_text("https://example.com/x").expect("non-empty");
+        assert!(clip.kinds().contains(&ContentKind::Url));
 
         let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("none configured");
         assert!(
@@ -398,7 +594,7 @@ mod tests {
     #[test]
     fn a_command_receives_the_clipboard_on_stdin_and_notifies_with_its_output() {
         let action = command_action("echo", &["cat"], InputMode::Stdin, OutputMode::Notify);
-        let clip = Clip::Text("payload".to_string());
+        let clip = Clip::from_text("payload").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -409,7 +605,7 @@ mod tests {
     #[test]
     fn a_command_can_take_the_clipboard_as_a_final_argument() {
         let action = command_action("echo", &["echo"], InputMode::Argument, OutputMode::Notify);
-        let clip = Clip::Text("as an argument".to_string());
+        let clip = Clip::from_text("as an argument").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -419,7 +615,7 @@ mod tests {
     #[test]
     fn a_command_can_take_the_clipboard_as_a_file() {
         let action = command_action("cat", &["cat"], InputMode::File, OutputMode::Notify);
-        let clip = Clip::Text("via a file".to_string());
+        let clip = Clip::from_text("via a file").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -434,7 +630,7 @@ mod tests {
             InputMode::None,
             OutputMode::Notify,
         );
-        let clip = Clip::Text("ignored".to_string());
+        let clip = Clip::from_text("ignored").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -444,7 +640,7 @@ mod tests {
     #[test]
     fn a_discarding_command_reports_that_it_ran() {
         let action = command_action("true", &["true"], InputMode::None, OutputMode::Discard);
-        let clip = Clip::Text("x".to_string());
+        let clip = Clip::from_text("x").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -460,7 +656,7 @@ mod tests {
             InputMode::None,
             OutputMode::Discard,
         );
-        let clip = Clip::Text("x".to_string());
+        let clip = Clip::from_text("x").expect("non-empty");
         let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("fails");
         assert!(err.to_string().contains("went wrong"), "{err}");
     }
@@ -469,7 +665,7 @@ mod tests {
     fn hostile_clipboard_text_reaches_a_command_verbatim() {
         let action = command_action("cat", &["cat"], InputMode::Stdin, OutputMode::Notify);
         let hostile = "$(touch /tmp/lcc-should-not-exist); rm -rf ~";
-        let clip = Clip::Text(hostile.to_string());
+        let clip = Clip::from_text(hostile).expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");
@@ -488,7 +684,7 @@ mod tests {
             InputMode::None,
             OutputMode::Notify,
         );
-        let clip = Clip::Text("x".to_string());
+        let clip = Clip::from_text("x").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels())
             .expect("runs")
             .expect("not cancelled");

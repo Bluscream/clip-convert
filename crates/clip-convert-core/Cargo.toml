@@ -57,6 +57,13 @@ serde_json = "1.0"
 version = "3.4"
 features = ["image-data", "wayland-data-control"]
 
+# arboard handles only text and images. Reading `text/uri-list` — which is the
+# only thing a file manager publishes — needs the protocol directly. This is
+# already in the tree as arboard's own Wayland backend.
+[target.'cfg(target_os = "linux")'.dependencies.wl-clipboard-rs]
+version = "0.9"
+
+
 # `enigo` defaults to the `xdo` backend, which links the C library libxdo. The
 # pure-Rust backends are used instead so the crate builds with no C toolchain and
 # no system packages: x11rb for X11, and the Wayland backend, which includes the

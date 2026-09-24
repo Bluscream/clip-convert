@@ -440,7 +440,7 @@ mod tests {
         let actions = Config::default().validate().expect("valid");
         for kind in ContentKind::all() {
             assert!(
-                !crate::action::for_kind(&actions, kind).is_empty(),
+                !crate::action::for_kinds(&actions, &BTreeSet::from([kind])).is_empty(),
                 "no action offered for {kind}"
             );
         }
@@ -449,30 +449,33 @@ mod tests {
     #[test]
     fn the_factory_url_menu_is_the_documented_set() {
         let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> = crate::action::for_kind(&actions, ContentKind::Url)
-            .iter()
-            .map(|a| a.id.as_str())
-            .collect();
+        let ids: Vec<&str> =
+            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Url]))
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
         assert_eq!(ids, ["type", "shorten", "split", "truncate"]);
     }
 
     #[test]
     fn the_factory_image_menu_is_the_documented_set() {
         let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> = crate::action::for_kind(&actions, ContentKind::Image)
-            .iter()
-            .map(|a| a.id.as_str())
-            .collect();
+        let ids: Vec<&str> =
+            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Image]))
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
         assert_eq!(ids, ["type", "resize"]);
     }
 
     #[test]
     fn shorten_is_not_offered_for_plain_text() {
         let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> = crate::action::for_kind(&actions, ContentKind::Text)
-            .iter()
-            .map(|a| a.id.as_str())
-            .collect();
+        let ids: Vec<&str> =
+            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Text]))
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
         assert_eq!(ids, ["type", "split", "truncate"]);
     }
 
@@ -587,7 +590,7 @@ mod tests {
         assert!(!reloaded.auto_shorten);
 
         let actions = reloaded.validate().expect("custom action is valid");
-        let image = crate::action::for_kind(&actions, ContentKind::Image);
+        let image = crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Image]));
         assert!(image.iter().any(|a| a.id == "ocr"));
     }
 
