@@ -1,0 +1,54 @@
+[workspace]
+members = ["crates/lcc-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.82"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+too_many_lines = "warn"
+unwrap_used = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+anyhow = "1.0"
+log = "0.4"
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+toml = "0.8"
+url = "2.5"
+
+[package]
+name = "linux-clip-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Clipboard action launcher for Linux: auto-shorten URLs and run configurable actions on clipboard content."
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-core = { path = "crates/lcc-core" }
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+tray-icon = "0.19"
+gtk = "0.18"
+glib = "0.18"
+evdev = "0.12"
+notify-rust = "4"
+single-instance = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
