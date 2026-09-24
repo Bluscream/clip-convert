@@ -211,7 +211,43 @@ fn run_resize(
     let files = clip.files().ok_or_else(|| RunError::WrongKind {
         label: "Resize".to_string(),
     })?;
-    resize_batch(files, &target).map(Some)
+
+    let batch = resize_batch(files, &target)?;
+    clipboard::write_files(&batch.written)?;
+    Ok(Some(batch.into_outcome(&target)))
+}
+
+/// What a batch produced.
+#[derive(Debug)]
+struct Batch {
+    written: Vec<PathBuf>,
+    failures: Vec<String>,
+    total: usize,
+}
+
+impl Batch {
+    /// Reports what happened, naming the failures rather than hiding them.
+    fn into_outcome(self, target: &Preset) -> Outcome {
+        let mut message = format!(
+            "Resized {} of {} for {}. The results are on the clipboard.",
+            self.written.len(),
+            self.total,
+            target.label
+        );
+        if !self.failures.is_empty() {
+            use std::fmt::Write;
+            let _ = write!(
+                message,
+                "\n{} failed: {}",
+                self.failures.len(),
+                self.failures.join("; ")
+            );
+        }
+        Outcome {
+            message,
+            clipboard_changed: true,
+        }
+    }
 }
 
 /// Replaces the clipboard's image with a resized copy.
@@ -231,12 +267,15 @@ fn resize_one(bytes: &[u8], target: &Preset) -> Result<Outcome, RunError> {
     })
 }
 
-/// Resizes every file, writing the results out and putting them on the
-/// clipboard as a new selection.
+/// Resizes every file, writing the results into a scratch directory.
+///
+/// Does not touch the clipboard — the caller does that. Keeping the side effect
+/// out means this can be tested without writing over whatever the user has
+/// copied, which an earlier version did.
 ///
 /// One unreadable file does not abandon the rest: the others are still useful,
 /// and the failures are named in the result rather than swallowed.
-fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Outcome, RunError> {
+fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Batch, RunError> {
     let directory = crate::scratch::output_dir("resize").map_err(RunError::TempFile)?;
 
     let mut written = Vec::new();
@@ -259,27 +298,10 @@ fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Outcome, RunError>
         });
     }
 
-    clipboard::write_files(&written)?;
-
-    let mut message = format!(
-        "Resized {} of {} for {}. The results are on the clipboard.",
-        written.len(),
-        files.len(),
-        target.label
-    );
-    if !failures.is_empty() {
-        use std::fmt::Write;
-        let _ = write!(
-            message,
-            "\n{} failed: {}",
-            failures.len(),
-            failures.join("; ")
-        );
-    }
-
-    Ok(Outcome {
-        message,
-        clipboard_changed: true,
+    Ok(Batch {
+        written,
+        failures,
+        total: files.len(),
     })
 }
 
@@ -486,14 +508,16 @@ mod tests {
             })
             .collect();
 
-        let outcome = resize_batch(&sources, &preset()).expect("batch runs");
-        assert!(outcome.clipboard_changed);
-        assert!(
-            outcome.message.contains("Resized 3 of 3"),
-            "{}",
-            outcome.message
-        );
-        assert!(!outcome.message.contains("failed"), "{}", outcome.message);
+        let batch = resize_batch(&sources, &preset()).expect("batch runs");
+        assert_eq!(batch.written.len(), 3);
+        assert!(batch.failures.is_empty());
+        for path in &batch.written {
+            let decoded = ::image::open(path).expect("a readable image");
+            assert!(decoded.width() <= 32 && decoded.height() <= 32);
+        }
+
+        let message = batch.into_outcome(&preset()).message;
+        assert!(message.contains("Resized 3 of 3"), "{message}");
     }
 
     #[test]
@@ -504,17 +528,11 @@ mod tests {
         let bad = dir.path().join("broken.png");
         std::fs::write(&bad, b"not an image").expect("writes");
 
-        let outcome = resize_batch(&[good, bad], &preset()).expect("partial success still works");
-        assert!(
-            outcome.message.contains("Resized 1 of 2"),
-            "{}",
-            outcome.message
-        );
-        assert!(
-            outcome.message.contains("broken.png"),
-            "{}",
-            outcome.message
-        );
+        let batch = resize_batch(&[good, bad], &preset()).expect("partial success still works");
+        assert_eq!(batch.written.len(), 1);
+        let message = batch.into_outcome(&preset()).message;
+        assert!(message.contains("Resized 1 of 2"), "{message}");
+        assert!(message.contains("broken.png"), "{message}");
     }
 
     #[test]

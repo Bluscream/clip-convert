@@ -325,7 +325,7 @@ fn set_image(
 }
 
 /// Puts a file selection on the clipboard, so it can be pasted into a file
-/// manager or any application that accepts dropped files.
+/// manager or anything that accepts dropped files.
 ///
 /// # Errors
 ///
@@ -333,32 +333,70 @@ fn set_image(
 /// file list is not implemented.
 #[cfg(target_os = "linux")]
 pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
-    use wl_clipboard_rs::copy::{copy, MimeType, Options, ServeRequests, Source};
-
-    let body = crate::files::to_uri_list(paths);
-    if body.is_empty() {
+    let uris = crate::files::to_uri_list(paths);
+    if uris.is_empty() {
         return Err(ClipboardError::Empty);
     }
 
-    let mut options = Options::new();
-    // Served until something else takes the clipboard, from a forked child, so
-    // the selection survives this function returning.
-    options.serve_requests(ServeRequests::Unlimited);
-    options.foreground(false);
+    // Offered two ways from one selection: file managers and drop targets want
+    // the URI list, while pasting into an editor should give readable paths
+    // rather than percent-encoded `file://` URIs.
+    let plain = paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    copy(
-        options,
-        Source::Bytes(body.into_bytes().into()),
-        MimeType::Specific(URI_LIST.to_string()),
-    )
-    .map_err(|e| ClipboardError::Files(e.to_string()))?;
+    let count = paths.len();
+    let (ready_tx, ready_rx) = mpsc::channel();
 
-    log::debug!("wrote {} file(s) to the clipboard", paths.len());
-    Ok(())
+    std::thread::spawn(move || {
+        use wl_clipboard_rs::copy::{
+            copy_multi, MimeSource, MimeType, Options, ServeRequests, Source,
+        };
+
+        let mut options = Options::new();
+        options.serve_requests(ServeRequests::Unlimited);
+        // Served from this thread rather than a forked child. `wl-clipboard-rs`
+        // forks by default, and forking a process with as many threads as this
+        // one has is unreliable — the child only inherits the calling thread and
+        // can deadlock on a lock another thread held, which lost the offer.
+        options.foreground(true);
+
+        // Reported before the call, because it does not return until ownership
+        // is lost, which may be much later.
+        let _ = ready_tx.send(Ok(()));
+
+        let sources = vec![
+            MimeSource {
+                source: Source::Bytes(uris.into_bytes().into()),
+                mime_type: MimeType::Specific(URI_LIST.to_string()),
+            },
+            MimeSource {
+                source: Source::Bytes(plain.into_bytes().into()),
+                mime_type: MimeType::Specific("text/plain".to_string()),
+            },
+        ];
+
+        if let Err(e) = copy_multi(options, sources) {
+            log::warn!("serving the file selection ended: {e}");
+        }
+    });
+
+    match ready_rx.recv_timeout(WRITE_TIMEOUT) {
+        Ok(Ok(())) => {
+            log::debug!("wrote {count} file(s) to the clipboard");
+            Ok(())
+        }
+        Ok(Err(e)) => Err(ClipboardError::Files(e)),
+        Err(_) => Err(ClipboardError::Unavailable),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn write_files(_paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
+    // Windows uses CF_HDROP and macOS NSFilenamesPboardType; neither is wired
+    // up yet.
     Err(ClipboardError::NoFileSupport)
 }
 
