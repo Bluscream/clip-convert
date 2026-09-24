@@ -51,7 +51,13 @@ impl Default for Commands {
             key_paste: v(&["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]),
             identify: v(&["magick", "identify", "-format", "%w %h", "{input}"]),
             convert_inside: v(&[
-                "magick", "{input}", "-resize", "{geometry}", "-quality", "{quality}", "{output}",
+                "magick",
+                "{input}",
+                "-resize",
+                "{geometry}",
+                "-quality",
+                "{quality}",
+                "{output}",
             ]),
             convert_exact: v(&[
                 "magick",
@@ -143,6 +149,10 @@ pub struct Shortener {
 }
 
 /// The whole configuration.
+// Each flag is an independent user-facing toggle with its own config key;
+// grouping them into sub-structs purely to satisfy the lint would change the
+// file format without making anything clearer.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -169,6 +179,10 @@ pub struct Config {
     /// Copying the same URL twice in a row leaves it alone.
     #[serde(default = "default_true")]
     pub bypass_double_copy: bool,
+    /// Accept invalid TLS certificates when talking to a shortener. Only for a
+    /// self-hosted instance with a self-signed certificate.
+    #[serde(default)]
+    pub ignore_ssl_errors: bool,
     /// Per-key delay for typing, in ms. Higher is slower but more reliable in
     /// apps that drop synthesised keys.
     #[serde(default = "default_type_delay")]
@@ -206,6 +220,7 @@ impl Default for Config {
             bypass_shift: true,
             bypass_scroll_lock: true,
             bypass_double_copy: true,
+            ignore_ssl_errors: false,
             type_delay_ms: default_type_delay(),
             split: SplitSettings::default(),
             truncate: TruncateSettings::default(),
@@ -287,6 +302,11 @@ impl Config {
     ///
     /// Called once at startup and again after a reload, so that a broken edit is
     /// reported as a notification instead of taking effect halfway.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first problem found, phrased to name the offending field,
+    /// action, preset or shortener.
     pub fn validate(&self) -> Result<Vec<Action>, ConfigError> {
         if self.split.default_limit == 0 {
             return Err(ConfigError::NotPositive {
@@ -364,6 +384,11 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Reads the config at `path`, writing a commented default file if none exists.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Read`] or [`ConfigError::Parse`] for an unusable
+/// file, or [`ConfigError::Write`] if the default file could not be created.
 pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
     if !path.exists() {
         let config = Config::default();
@@ -383,6 +408,11 @@ pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
 }
 
 /// Writes `config` to `path`, creating the parent directory if needed.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Write`] if the directory or file cannot be written,
+/// or [`ConfigError::Encode`] if the config cannot be serialised.
 pub fn save_to(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
@@ -405,7 +435,9 @@ mod tests {
 
     #[test]
     fn the_default_config_is_valid() {
-        Config::default().validate().expect("factory config must load");
+        Config::default()
+            .validate()
+            .expect("factory config must load");
     }
 
     #[test]
@@ -471,8 +503,13 @@ mod tests {
 
     #[test]
     fn a_zero_limit_is_rejected_rather_than_panicking_later() {
-        let mut config = Config::default();
-        config.split.default_limit = 0;
+        let config = Config {
+            split: SplitSettings {
+                default_limit: 0,
+                ..SplitSettings::default()
+            },
+            ..Config::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::NotPositive {
@@ -483,8 +520,10 @@ mod tests {
 
     #[test]
     fn an_invalid_blacklist_regex_is_reported() {
-        let mut config = Config::default();
-        config.blacklist_regex = "([".to_string();
+        let config = Config {
+            blacklist_regex: "([".to_string(),
+            ..Config::default()
+        };
         assert!(matches!(config.validate(), Err(ConfigError::BadRegex(_))));
     }
 

@@ -123,7 +123,9 @@ pub enum ActionError {
     EmptyCommand { id: String },
     #[error("action `{id}` has an empty `id` or `label`")]
     Unnamed { id: String },
-    #[error("action `{id}` has unknown content kind `{kind}` in `when` (valid: url, text, image, any)")]
+    #[error(
+        "action `{id}` has unknown content kind `{kind}` in `when` (valid: url, text, image, any)"
+    )]
     UnknownKind { id: String, kind: String },
     #[error("duplicate action id `{id}`")]
     DuplicateId { id: String },
@@ -131,10 +133,17 @@ pub enum ActionError {
 
 impl Action {
     /// Validates one config entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the specific [`ActionError`] describing what is wrong with the
+    /// entry, so the message can name the offending action by id.
     pub fn from_spec(spec: &ActionSpec) -> Result<Self, ActionError> {
         let id = spec.id.trim().to_string();
         if id.is_empty() || spec.label.trim().is_empty() {
-            return Err(ActionError::Unnamed { id: spec.id.clone() });
+            return Err(ActionError::Unnamed {
+                id: spec.id.clone(),
+            });
         }
 
         let has_command = !spec.command.is_empty();
@@ -190,6 +199,10 @@ fn parse_when(id: &str, when: &[String]) -> Result<BTreeSet<ContentKind>, Action
 /// Duplicates are an error rather than last-one-wins because two entries sharing
 /// an id is almost always a copy-paste mistake, and silently dropping one of them
 /// looks exactly like the action not working.
+///
+/// # Errors
+///
+/// Returns the first [`ActionError`] found, including a duplicate id.
 pub fn validate_all(specs: &[ActionSpec]) -> Result<Vec<Action>, ActionError> {
     let mut seen = BTreeSet::new();
     let mut actions = Vec::with_capacity(specs.len());
@@ -273,7 +286,9 @@ mod tests {
         s.command = vec!["echo".to_string()];
         assert_eq!(
             Action::from_spec(&s),
-            Err(ActionError::BothBuiltinAndCommand { id: "a".to_string() })
+            Err(ActionError::BothBuiltinAndCommand {
+                id: "a".to_string()
+            })
         );
 
         s.builtin = None;
@@ -282,7 +297,9 @@ mod tests {
         s.command = Vec::new();
         assert_eq!(
             Action::from_spec(&s),
-            Err(ActionError::NeitherBuiltinNorCommand { id: "a".to_string() })
+            Err(ActionError::NeitherBuiltinNorCommand {
+                id: "a".to_string()
+            })
         );
     }
 
@@ -293,7 +310,9 @@ mod tests {
         s.command = vec!["  ".to_string()];
         assert_eq!(
             Action::from_spec(&s),
-            Err(ActionError::EmptyCommand { id: "a".to_string() })
+            Err(ActionError::EmptyCommand {
+                id: "a".to_string()
+            })
         );
     }
 
@@ -312,7 +331,9 @@ mod tests {
         let specs = vec![spec("a"), spec("a")];
         assert_eq!(
             validate_all(&specs),
-            Err(ActionError::DuplicateId { id: "a".to_string() })
+            Err(ActionError::DuplicateId {
+                id: "a".to_string()
+            })
         );
     }
 

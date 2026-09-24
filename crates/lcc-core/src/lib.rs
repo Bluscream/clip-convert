@@ -6,7 +6,13 @@
 //! it builds and tests in seconds.
 
 pub mod action;
+pub mod clipboard;
 pub mod config;
 pub mod content;
+pub mod exec;
+pub mod image;
 pub mod presets;
+pub mod runner;
+pub mod shorten;
 pub mod text;
+pub mod typing;

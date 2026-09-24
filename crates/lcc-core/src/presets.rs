@@ -15,7 +15,8 @@ pub enum Fit {
     /// smaller than the box on one axis.
     #[default]
     Inside,
-    /// Scale to fit, then pad with transparency to exactly the box size. Needed
+    /// Scale to fit, then pad with transparency to exactly the box size.
+    /// Needed
     /// by platforms that reject anything but an exact canvas.
     Exact,
 }
@@ -31,7 +32,7 @@ pub struct Preset {
     /// Upper bound on the encoded file size, in bytes. Zero means unconstrained.
     #[serde(default)]
     pub max_bytes: u64,
-    /// Output container, as an ImageMagick format name.
+    /// Output container, as an `ImageMagick` format name.
     pub format: String,
     #[serde(default)]
     pub fit: Fit,
@@ -51,16 +52,96 @@ pub fn factory() -> Vec<Preset> {
     };
 
     vec![
-        p("discord", "Discord sticker", 320, 320, 512 * 1024, "png", Fit::Exact),
-        p("telegram", "Telegram sticker", 512, 512, 512 * 1024, "webp", Fit::Inside),
-        p("telegram-icon", "Telegram pack icon", 100, 100, 128 * 1024, "png", Fit::Exact),
-        p("signal", "Signal sticker", 512, 512, 300 * 1024, "png", Fit::Exact),
-        p("whatsapp", "WhatsApp sticker", 512, 512, 100 * 1024, "webp", Fit::Exact),
-        p("whatsapp-tray", "WhatsApp tray icon", 96, 96, 50 * 1024, "png", Fit::Exact),
-        p("vrchat", "VRChat sticker", 1024, 1024, 8 * 1024 * 1024, "png", Fit::Exact),
-        p("slack", "Slack emoji", 128, 128, 128 * 1024, "png", Fit::Inside),
-        p("line", "LINE sticker", 320, 270, 1024 * 1024, "png", Fit::Inside),
-        p("matrix", "Matrix sticker", 512, 512, 512 * 1024, "webp", Fit::Inside),
+        p(
+            "discord",
+            "Discord sticker",
+            320,
+            320,
+            512 * 1024,
+            "png",
+            Fit::Exact,
+        ),
+        p(
+            "telegram",
+            "Telegram sticker",
+            512,
+            512,
+            512 * 1024,
+            "webp",
+            Fit::Inside,
+        ),
+        p(
+            "telegram-icon",
+            "Telegram pack icon",
+            100,
+            100,
+            128 * 1024,
+            "png",
+            Fit::Exact,
+        ),
+        p(
+            "signal",
+            "Signal sticker",
+            512,
+            512,
+            300 * 1024,
+            "png",
+            Fit::Exact,
+        ),
+        p(
+            "whatsapp",
+            "WhatsApp sticker",
+            512,
+            512,
+            100 * 1024,
+            "webp",
+            Fit::Exact,
+        ),
+        p(
+            "whatsapp-tray",
+            "WhatsApp tray icon",
+            96,
+            96,
+            50 * 1024,
+            "png",
+            Fit::Exact,
+        ),
+        p(
+            "vrchat",
+            "VRChat sticker",
+            1024,
+            1024,
+            8 * 1024 * 1024,
+            "png",
+            Fit::Exact,
+        ),
+        p(
+            "slack",
+            "Slack emoji",
+            128,
+            128,
+            128 * 1024,
+            "png",
+            Fit::Inside,
+        ),
+        p(
+            "line",
+            "LINE sticker",
+            320,
+            270,
+            1024 * 1024,
+            "png",
+            Fit::Inside,
+        ),
+        p(
+            "matrix",
+            "Matrix sticker",
+            512,
+            512,
+            512 * 1024,
+            "webp",
+            Fit::Inside,
+        ),
     ]
 }
 
@@ -128,6 +209,11 @@ mod tests {
         }
     }
 
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        presets: Vec<Preset>,
+    }
+
     #[test]
     fn factory_presets_survive_a_config_round_trip() {
         let original = factory();
@@ -137,10 +223,6 @@ mod tests {
         )]))
         .expect("encodable");
 
-        #[derive(serde::Deserialize)]
-        struct Wrapper {
-            presets: Vec<Preset>,
-        }
         let decoded: Wrapper = toml::from_str(&encoded).expect("decodable");
         assert_eq!(decoded.presets, original);
     }

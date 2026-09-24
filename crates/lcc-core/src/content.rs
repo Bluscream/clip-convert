@@ -173,7 +173,8 @@ pub fn pick_image_mime(offered: &[String]) -> Option<String> {
 }
 
 /// Formats a byte count the way a file manager would.
-fn human_bytes(bytes: usize) -> String {
+#[must_use]
+pub fn human_bytes(bytes: usize) -> String {
     #[allow(clippy::cast_precision_loss)] // Display only; precision beyond 1 decimal is not shown.
     let value = bytes as f64;
     if bytes < 1024 {
@@ -204,7 +205,10 @@ mod tests {
 
     #[test]
     fn a_bare_url_is_a_url() {
-        assert_eq!(classify_text("https://example.com/a").kind(), ContentKind::Url);
+        assert_eq!(
+            classify_text("https://example.com/a").kind(),
+            ContentKind::Url
+        );
         assert_eq!(classify_text("http://example.com").kind(), ContentKind::Url);
     }
 
@@ -245,7 +249,10 @@ mod tests {
         // `http://localhost/` and intranet short names are legitimate targets, so
         // the host is not required to contain a dot. Note that the URL spec
         // normalises `https:///path` to host `path` rather than rejecting it.
-        assert_eq!(classify_text("http://localhost:8080/x").kind(), ContentKind::Url);
+        assert_eq!(
+            classify_text("http://localhost:8080/x").kind(),
+            ContentKind::Url
+        );
         assert_eq!(classify_text("https:///path").kind(), ContentKind::Url);
     }
 
@@ -327,4 +334,3 @@ mod tests {
         assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MB");
     }
 }
-
