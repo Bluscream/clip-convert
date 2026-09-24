@@ -12,7 +12,7 @@
 use crate::action::{Action, ActionSpec, Builtin, InputMode, OutputMode};
 use crate::presets::{self, Preset};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub(crate) const fn default_true() -> bool {
@@ -169,6 +169,12 @@ pub struct Config {
     pub presets: Vec<Preset>,
     #[serde(default = "factory_actions")]
     pub actions: Vec<ActionSpec>,
+    /// Sizes the dialogs were last left at, keyed by dialog.
+    ///
+    /// Written by the app rather than by hand; editing it is harmless but
+    /// pointless, since the next resize overwrites it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub window_sizes: BTreeMap<String, crate::protocol::WindowSize>,
 }
 
 fn default_hotkey() -> String {
@@ -203,6 +209,7 @@ impl Default for Config {
             shorteners: Vec::new(),
             presets: presets::factory(),
             actions: factory_actions(),
+            window_sizes: BTreeMap::new(),
         }
     }
 }

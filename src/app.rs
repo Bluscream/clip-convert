@@ -9,7 +9,9 @@ use crate::prompt::Prompter;
 use anyhow::{Context, Result};
 use clipconv::action::Action;
 use clipconv::config::{self, Config};
+use clipconv::content::ContentKind;
 use clipconv::{auto, clipboard, runner, shorten, typing};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +27,12 @@ pub struct App {
     last_written: Mutex<Option<String>>,
     /// The URL most recently considered, for the double-copy rule.
     last_seen: Mutex<Option<String>>,
+    /// Per content kind, the action to run without asking.
+    ///
+    /// Deliberately not persisted: this is a "for now" setting, so restarting
+    /// the app brings the menu back rather than leaving a rule someone set
+    /// weeks ago and forgot.
+    defaults: Mutex<BTreeMap<ContentKind, String>>,
     /// Set while an action pipeline is running, so a second hotkey press cannot
     /// open a second menu on top of the first.
     busy: AtomicBool,
@@ -48,6 +56,7 @@ impl App {
             config_path,
             last_written: Mutex::new(None),
             last_seen: Mutex::new(None),
+            defaults: Mutex::new(BTreeMap::new()),
             busy: AtomicBool::new(false),
             modifiers,
         })
@@ -72,6 +81,44 @@ impl App {
     #[must_use]
     pub fn auto_shorten(&self) -> bool {
         self.config().auto_shorten
+    }
+
+    /// The action that runs without asking for `kind`, if one is set.
+    #[must_use]
+    pub fn default_action(&self, kind: ContentKind) -> Option<String> {
+        self.defaults
+            .lock()
+            .ok()
+            .and_then(|defaults| defaults.get(&kind).cloned())
+    }
+
+    /// Sets, or with `None` clears, the action that runs without asking.
+    pub fn set_default_action(&self, kind: ContentKind, action: Option<String>) {
+        let Ok(mut defaults) = self.defaults.lock() else {
+            return;
+        };
+        match action {
+            Some(id) => {
+                log::info!("{kind} will run `{id}` without asking");
+                defaults.insert(kind, id);
+            }
+            None => {
+                defaults.remove(&kind);
+            }
+        }
+    }
+
+    /// The actions that could be offered for `kind`, as `(id, label)`.
+    ///
+    /// Uses the configured labels, since the tray has no clipboard content to
+    /// name a subject from.
+    #[must_use]
+    pub fn actions_for(&self, kind: ContentKind) -> Vec<(String, String)> {
+        let available = std::collections::BTreeSet::from([kind]);
+        clipconv::action::for_kinds(&self.actions(), &available)
+            .iter()
+            .map(|a| (a.id.clone(), a.label.clone()))
+            .collect()
     }
 
     /// The configured hotkey spec, e.g. `ctrl+b`.
@@ -187,17 +234,34 @@ impl App {
             .map(|a| (a.id.clone(), a.display_label(&clip)))
             .collect();
 
-        log::debug!("offering {} actions for {kinds:?}", labelled.len());
-        let Some(choice) =
-            prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)
-        else {
-            log::debug!("action menu dismissed");
-            return Ok(());
-        };
+        // A default for this kind skips the menu entirely. It is ignored when
+        // the action it names is not among those offered, which happens if the
+        // config changed since it was set.
+        let source = clip.source_kind();
+        let chosen_id = match self.default_action(source) {
+            Some(id) if labelled.iter().any(|(known, _)| *known == id) => {
+                log::debug!("running `{id}` without asking: it is the default for {source}");
+                id
+            }
+            _ => {
+                log::debug!("offering {} actions for {kinds:?}", labelled.len());
+                let Some(choice) =
+                    prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)
+                else {
+                    log::debug!("action menu dismissed");
+                    return Ok(());
+                };
 
-        if choice.paste_after != config.paste_after_action {
-            self.set_paste_after(choice.paste_after);
-        }
+                if choice.paste_after != config.paste_after_action {
+                    self.set_paste_after(choice.paste_after);
+                }
+                choice.action_id
+            }
+        };
+        let choice = clipconv::protocol::ActionChoice {
+            action_id: chosen_id,
+            paste_after: self.config().paste_after_action,
+        };
 
         log::debug!("chose {}", choice.action_id);
         let Some(action) = offered.iter().find(|a| a.id == choice.action_id) else {
@@ -290,6 +354,18 @@ impl App {
             notify("Link shortened", &format!("{url}\n→ {short}"));
         }
         Ok(())
+    }
+}
+
+impl crate::prompt::SizeStore for App {
+    fn size(&self, key: &str) -> Option<clipconv::protocol::WindowSize> {
+        self.config().window_sizes.get(key).copied()
+    }
+
+    fn set_size(&self, key: &str, size: clipconv::protocol::WindowSize) {
+        self.update(|config| {
+            config.window_sizes.insert(key.to_string(), size);
+        });
     }
 }
 

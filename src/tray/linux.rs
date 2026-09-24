@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::command::{Command, Commands};
 use anyhow::{Context, Result};
+use clipconv::content::ContentKind;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,6 +63,8 @@ impl ksni::Tray for Tray {
             }
             .into(),
             MenuItem::Separator,
+            self.default_action_menu(),
+            MenuItem::Separator,
             StandardItem {
                 label: "Edit configuration…".to_string(),
                 icon_name: "document-edit".to_string(),
@@ -98,6 +101,93 @@ impl ksni::Tray for Tray {
             .into(),
         ]
     }
+}
+
+impl Tray {
+    /// The "Default action" submenu: per content kind, which action to run
+    /// without asking.
+    ///
+    /// Grouped by kind with a divider between groups, so it reads as a set of
+    /// independent rules rather than one long list.
+    fn default_action_menu(&self) -> ksni::MenuItem<Self> {
+        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
+
+        let mut entries: Vec<MenuItem<Self>> = Vec::new();
+
+        for kind in ContentKind::all() {
+            let actions = self.app.actions_for(kind);
+            if actions.is_empty() {
+                continue;
+            }
+
+            if !entries.is_empty() {
+                entries.push(MenuItem::Separator);
+            }
+
+            // A disabled item as a group heading: the tray protocol has no
+            // section label of its own.
+            entries.push(
+                StandardItem {
+                    label: heading_for(kind),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+
+            let current = self.app.default_action(kind);
+            entries.push(
+                CheckmarkItem {
+                    label: "Ask every time".to_string(),
+                    checked: current.is_none(),
+                    activate: Box::new(move |tray: &mut Self| {
+                        tray.app.set_default_action(kind, None);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+
+            for (id, label) in actions {
+                let checked = current.as_deref() == Some(id.as_str());
+                entries.push(
+                    CheckmarkItem {
+                        label,
+                        checked,
+                        activate: Box::new(move |tray: &mut Self| {
+                            // Choosing the one already set turns it off again,
+                            // so the submenu behaves like a set of radio
+                            // buttons that can all be cleared.
+                            let next = if checked { None } else { Some(id.clone()) };
+                            tray.app.set_default_action(kind, next);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+        }
+
+        SubMenu {
+            label: "Default action (this session)".to_string(),
+            submenu: entries,
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+/// The heading shown above a kind's choices.
+fn heading_for(kind: ContentKind) -> String {
+    match kind {
+        ContentKind::Files => "Files",
+        ContentKind::Video => "Video",
+        ContentKind::Image => "Images",
+        ContentKind::Html => "Rich text",
+        ContentKind::Url => "Links",
+        ContentKind::Text => "Text",
+    }
+    .to_string()
 }
 
 /// Publishes the tray on a small runtime of its own.

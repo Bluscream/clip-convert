@@ -7,8 +7,21 @@
 use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, Reply, Request};
 
-/// Width of every dialog, in logical points.
-pub const DIALOG_WIDTH: f32 = 460.0;
+/// Width of a dialog, in logical points.
+const DIALOG_WIDTH: f32 = 460.0;
+
+/// Width of the resize chooser, which lays its targets out in two columns.
+const WIDE_DIALOG_WIDTH: f32 = 680.0;
+
+/// How many columns the resize chooser uses.
+const PRESET_COLUMNS: usize = 2;
+
+/// Size of a preset's name.
+const PRESET_TITLE: f32 = 15.0;
+
+/// Size of the limits line under a preset's name. Deliberately smaller: it is
+/// reference information, not the thing being chosen.
+const PRESET_SUBTITLE: f32 = 11.5;
 
 /// Minimum height of an action button. Deliberately large: these are the
 /// primary targets, hit immediately after a hotkey, often without looking
@@ -70,6 +83,15 @@ impl Default for CustomSize {
     }
 }
 
+/// How wide the window should be for a request's content.
+#[must_use]
+pub fn window_width(request: &Request) -> f32 {
+    match request {
+        Request::AskResizeTarget { .. } => WIDE_DIALOG_WIDTH,
+        _ => DIALOG_WIDTH,
+    }
+}
+
 /// How tall the window should be for a request's content.
 #[must_use]
 pub fn window_height(request: &Request) -> f32 {
@@ -81,8 +103,10 @@ pub fn window_height(request: &Request) -> f32 {
         }
         Request::AskLimit { .. } => 200.0,
         Request::AskResizeTarget { presets } => {
+            // Two per row, plus a row for the custom-size button.
+            let rows = presets.len().div_ceil(PRESET_COLUMNS) + 1;
             #[allow(clippy::cast_precision_loss)]
-            let rows = presets.len() as f32 + 1.0;
+            let rows = rows as f32;
             // Capped so a long preset list cannot produce a window taller than
             // the screen; the list scrolls instead.
             rows.mul_add(BUTTON_HEIGHT + BUTTON_GAP, 120.0).min(720.0)
@@ -136,6 +160,39 @@ pub fn show(request: &Request, state: &mut State, ctx: &egui::Context) -> Option
 /// instead of running off the edge.
 fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let text = egui::RichText::new(label).size(BUTTON_TEXT).strong();
+    let width = ui.available_width();
+    ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
+}
+
+/// One preset: its name, with the limits it encodes underneath in smaller,
+/// dimmer text.
+///
+/// A `LayoutJob` rather than one string, because the two lines need different
+/// sizes and weights — the name is what is being chosen, the limits are there
+/// so choosing does not require remembering each platform's rules.
+fn preset_button(ui: &mut egui::Ui, preset: &Preset) -> egui::Response {
+    let mut text = egui::text::LayoutJob::default();
+    text.append(
+        &preset.label,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(PRESET_TITLE),
+            color: ui.visuals().strong_text_color(),
+            ..Default::default()
+        },
+    );
+    text.append(
+        &format!("\n{}", preset.summary()),
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(PRESET_SUBTITLE),
+            // Dimmed from the body colour rather than `weak_text_color`,
+            // which is faint enough to be hard to read at this size.
+            color: ui.visuals().text_color().gamma_multiply(0.82),
+            ..Default::default()
+        },
+    );
+
     let width = ui.available_width();
     ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
 }
@@ -243,18 +300,16 @@ fn ask_resize_target(
     let mut chosen = None;
     let mut open_custom = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for preset in presets {
-            // Two lines: the name, and the limits it encodes, so choosing does
-            // not require remembering each platform's rules.
-            let text =
-                egui::RichText::new(format!("{}\n{}", preset.label, preset.summary())).size(15.0);
-            let width = ui.available_width();
-            if ui
-                .add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
-                .clicked()
-            {
-                chosen = Some(preset.clone());
-            }
+        // Laid out in rows of two: the list is long enough that one column
+        // means most of it is off-screen.
+        for row in presets.chunks(PRESET_COLUMNS) {
+            ui.columns(PRESET_COLUMNS, |columns| {
+                for (column, preset) in columns.iter_mut().zip(row) {
+                    if preset_button(column, preset).clicked() {
+                        chosen = Some(preset.clone());
+                    }
+                }
+            });
             ui.add_space(BUTTON_GAP);
         }
         if wide_button(ui, "Custom size…").clicked() {

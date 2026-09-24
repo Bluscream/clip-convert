@@ -15,6 +15,69 @@
 use crate::presets::Preset;
 use serde::{Deserialize, Serialize};
 
+/// A window size, in whole logical points.
+///
+/// Integers rather than floats: this is written to a config file and compared,
+/// and a fractional pixel is neither meaningful nor worth the float-equality
+/// problems it brings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl WindowSize {
+    /// Smallest size a dialog may be remembered at.
+    ///
+    /// Stops a window that was dragged to nothing, or a garbled config value,
+    /// from reopening as an unusable sliver.
+    pub const MIN_WIDTH: u32 = 320;
+    pub const MIN_HEIGHT: u32 = 180;
+
+    /// Whether this is a size worth remembering.
+    #[must_use]
+    pub fn is_usable(self) -> bool {
+        self.width >= Self::MIN_WIDTH && self.height >= Self::MIN_HEIGHT
+    }
+
+    /// Builds a size from measured points, rounding to whole ones.
+    ///
+    /// Returns `None` for anything not worth remembering, including the
+    /// non-finite values a compositor can report while a window is being
+    /// mapped or destroyed.
+    #[must_use]
+    pub fn from_points(width: f32, height: f32) -> Option<Self> {
+        if !width.is_finite() || !height.is_finite() {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        // Guarded above; a negative rounds to 0 and fails the usability check.
+        let size = Self {
+            width: width.round().max(0.0) as u32,
+            height: height.round().max(0.0) as u32,
+        };
+        size.is_usable().then_some(size)
+    }
+}
+
+/// What the daemon sends: a dialog to show, and the size to open it at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    pub request: Request,
+    /// The size this dialog was last left at, if it has been used before.
+    #[serde(default)]
+    pub size: Option<WindowSize>,
+}
+
+/// What the dialog sends back: the answer, and the size it ended at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Answer {
+    pub reply: Reply,
+    /// The size the window was when it closed, so it can be reopened that way.
+    #[serde(default)]
+    pub size: Option<WindowSize>,
+}
+
 /// What the daemon wants shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "dialog", rename_all = "snake_case")]
@@ -41,6 +104,21 @@ pub enum Request {
 }
 
 impl Request {
+    /// The key this dialog's remembered size is stored under.
+    ///
+    /// Per dialog rather than per window: the action menu and the resize
+    /// chooser have very different natural shapes, and one remembered size for
+    /// both would suit neither.
+    #[must_use]
+    pub fn size_key(&self) -> &'static str {
+        match self {
+            Self::ChooseAction { .. } => "actions",
+            Self::AskLimit { .. } => "limit",
+            Self::AskResizeTarget { .. } => "resize",
+            Self::ShowError { .. } => "error",
+        }
+    }
+
     /// The window title for this dialog.
     #[must_use]
     pub fn title(&self) -> &str {
@@ -141,6 +219,93 @@ mod tests {
         for reply in replies {
             assert_eq!(round_trip(&reply), reply);
         }
+    }
+
+    #[test]
+    fn an_ask_and_answer_survive_the_wire() {
+        let ask = Ask {
+            request: Request::AskLimit {
+                title: "Split".to_string(),
+                message: "How many?".to_string(),
+                default: 2000,
+            },
+            size: Some(WindowSize {
+                width: 500,
+                height: 300,
+            }),
+        };
+        assert_eq!(round_trip(&ask), ask);
+
+        let answer = Answer {
+            reply: Reply::Limit { value: 12 },
+            size: None,
+        };
+        assert_eq!(round_trip(&answer), answer);
+    }
+
+    #[test]
+    fn an_ask_without_a_size_still_decodes() {
+        // The first time a dialog is used there is nothing remembered.
+        let json = r#"{"request":{"dialog":"show_error","message":"x"}}"#;
+        let ask: Ask = serde_json::from_str(json).expect("size is optional");
+        assert_eq!(ask.size, None);
+    }
+
+    #[test]
+    fn every_dialog_has_its_own_size_key() {
+        let keys = [
+            Request::ChooseAction {
+                description: String::new(),
+                actions: Vec::new(),
+                paste_after: false,
+            }
+            .size_key(),
+            Request::AskLimit {
+                title: String::new(),
+                message: String::new(),
+                default: 1,
+            }
+            .size_key(),
+            Request::AskResizeTarget {
+                presets: Vec::new(),
+            }
+            .size_key(),
+            Request::ShowError {
+                message: String::new(),
+            }
+            .size_key(),
+        ];
+        let unique: std::collections::BTreeSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "size keys must not collide");
+    }
+
+    #[test]
+    fn an_unusable_size_is_rejected() {
+        // A window dragged to nothing, or a garbled config value, must not be
+        // remembered — it would reopen unusable.
+        assert!(!WindowSize {
+            width: 10,
+            height: 10
+        }
+        .is_usable());
+        assert!(WindowSize {
+            width: 460,
+            height: 400
+        }
+        .is_usable());
+
+        // Measurements a compositor can report mid-map must not be stored.
+        assert_eq!(WindowSize::from_points(f32::NAN, 400.0), None);
+        assert_eq!(WindowSize::from_points(500.0, f32::INFINITY), None);
+        assert_eq!(WindowSize::from_points(-10.0, 400.0), None);
+        assert_eq!(WindowSize::from_points(10.0, 10.0), None);
+        assert_eq!(
+            WindowSize::from_points(460.4, 399.6),
+            Some(WindowSize {
+                width: 460,
+                height: 400
+            })
+        );
     }
 
     #[test]
