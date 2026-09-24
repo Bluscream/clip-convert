@@ -92,6 +92,22 @@ pub struct ActionSpec {
     pub enabled: bool,
 }
 
+impl Builtin {
+    /// The kind this behaviour actually operates on.
+    ///
+    /// Distinct from the `when` list, which only decides whether the action is
+    /// offered. `Type` is offered for a file selection but works on its text
+    /// form, so it should read "Type Text" rather than "Type Files".
+    #[must_use]
+    pub fn consumes(self) -> ContentKind {
+        match self {
+            Self::Type | Self::Split | Self::Truncate => ContentKind::Text,
+            Self::Shorten => ContentKind::Url,
+            Self::Resize => ContentKind::Image,
+        }
+    }
+}
+
 /// What running an action actually does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Run {
@@ -174,6 +190,46 @@ impl Action {
         })
     }
 
+    /// The button text for this action against particular content.
+    ///
+    /// The configured label names the verb; the noun comes from what the action
+    /// will operate on, so one entry reads correctly for one image and for
+    /// several. A label that already names its subject is left alone, so a
+    /// custom action called "Copy file names" does not become
+    /// "Copy file names Files".
+    #[must_use]
+    pub fn display_label(&self, clip: &crate::content::Clip) -> String {
+        let Some(kind) = self.target_kind(clip) else {
+            return self.label.clone();
+        };
+        let noun = clip.noun_for(kind);
+
+        let label = self.label.to_ascii_lowercase();
+        let singular = noun.trim_end_matches('s').to_ascii_lowercase();
+        if label.contains(&singular) {
+            return self.label.clone();
+        }
+
+        format!("{} {noun}", self.label)
+    }
+
+    /// The kind this action will operate on for the given content.
+    fn target_kind(&self, clip: &crate::content::Clip) -> Option<ContentKind> {
+        let available = clip.kinds();
+
+        if let Run::Builtin(builtin) = self.run {
+            let consumed = builtin.consumes();
+            // No noun when the thing it works on is not there. "Type" offered
+            // for a bare image would otherwise read "Type Image", which is
+            // exactly the one thing it cannot do.
+            return available.contains(&consumed).then_some(consumed);
+        }
+
+        // A configured command says nothing about what it reads, so the most
+        // specific kind it was offered for is the best available guess.
+        self.kinds.intersection(&available).next().copied()
+    }
+
     /// Whether this action should appear for content offering `available`.
     ///
     /// A clipboard offers several kinds at once — a file selection is also
@@ -246,6 +302,109 @@ mod tests {
             output: OutputMode::default(),
             enabled: true,
         }
+    }
+
+    use crate::content::Clip;
+    use std::path::PathBuf;
+
+    fn factory() -> Vec<Action> {
+        validate_all(&crate::config::factory_actions()).expect("factory actions are valid")
+    }
+
+    fn labels_for(clip: &Clip) -> Vec<String> {
+        let actions = factory();
+        for_kinds(&actions, &clip.kinds())
+            .iter()
+            .map(|a| a.display_label(clip))
+            .collect()
+    }
+
+    #[test]
+    fn labels_name_what_the_action_will_act_on() {
+        let clip = Clip::from_text("some words").expect("non-empty");
+        assert_eq!(
+            labels_for(&clip),
+            ["Type Text", "Split Text", "Truncate Text"]
+        );
+    }
+
+    #[test]
+    fn a_url_reads_as_a_url_but_text_actions_still_say_text() {
+        let clip = Clip::from_text("https://example.com/a").expect("non-empty");
+        assert_eq!(
+            labels_for(&clip),
+            ["Type Text", "Shorten URL", "Split Text", "Truncate Text"]
+        );
+    }
+
+    #[test]
+    fn a_single_image_is_singular() {
+        let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
+        // "Type" keeps its bare label: an image has no text form, so there is
+        // no honest noun to add.
+        assert_eq!(labels_for(&clip), ["Type", "Resize Image"]);
+    }
+
+    #[test]
+    fn several_image_files_are_plural() {
+        let clip = Clip::from_files(vec![
+            PathBuf::from("/a/one.png"),
+            PathBuf::from("/a/two.png"),
+        ])
+        .expect("non-empty");
+        assert!(
+            labels_for(&clip).contains(&"Resize Images".to_string()),
+            "{:?}",
+            labels_for(&clip)
+        );
+    }
+
+    #[test]
+    fn one_image_file_is_singular() {
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        assert!(
+            labels_for(&clip).contains(&"Resize Image".to_string()),
+            "{:?}",
+            labels_for(&clip)
+        );
+    }
+
+    #[test]
+    fn typing_a_file_selection_still_reads_as_text() {
+        // Offered because of the synthesised text facet, so the noun must come
+        // from what it consumes rather than from the most specific kind present.
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        assert!(labels_for(&clip).contains(&"Type Text".to_string()));
+    }
+
+    #[test]
+    fn a_label_that_already_names_its_subject_is_left_alone() {
+        let mut spec = spec("custom");
+        spec.label = "Copy file names".to_string();
+        spec.when = vec!["files".to_string()];
+        spec.builtin = None;
+        spec.command = vec!["true".to_string()];
+        let action = Action::from_spec(&spec).expect("valid");
+
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        assert_eq!(action.display_label(&clip), "Copy file names");
+    }
+
+    #[test]
+    fn a_command_action_takes_the_most_specific_kind_it_was_offered_for() {
+        let mut spec = spec("convert");
+        spec.label = "Convert".to_string();
+        spec.when = vec!["files".to_string(), "text".to_string()];
+        spec.builtin = None;
+        spec.command = vec!["true".to_string()];
+        let action = Action::from_spec(&spec).expect("valid");
+
+        let clip = Clip::from_files(vec![
+            PathBuf::from("/a/one.png"),
+            PathBuf::from("/a/two.png"),
+        ])
+        .expect("non-empty");
+        assert_eq!(action.display_label(&clip), "Convert Files");
     }
 
     #[test]

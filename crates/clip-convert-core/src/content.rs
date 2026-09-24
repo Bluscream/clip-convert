@@ -279,6 +279,45 @@ impl Clip {
         })
     }
 
+    /// The noun for `kind`, as it should read on a button.
+    ///
+    /// Pluralised from how many items are actually present, so a selection of
+    /// three pictures reads "Resize Images" while a single pasted screenshot
+    /// reads "Resize Image".
+    #[must_use]
+    pub fn noun_for(&self, kind: ContentKind) -> &'static str {
+        // Only a file selection can hold more than one of anything; image data
+        // held directly on the clipboard is always a single image.
+        let several = self.image().is_none() && self.files().is_some_and(|f| f.len() > 1);
+
+        match kind {
+            ContentKind::Files => {
+                if several {
+                    "Files"
+                } else {
+                    "File"
+                }
+            }
+            ContentKind::Video => {
+                if several {
+                    "Videos"
+                } else {
+                    "Video"
+                }
+            }
+            ContentKind::Image => {
+                if several {
+                    "Images"
+                } else {
+                    "Image"
+                }
+            }
+            ContentKind::Html => "Rich Text",
+            ContentKind::Url => "URL",
+            ContentKind::Text => "Text",
+        }
+    }
+
     /// The bytes to hand to an external command on stdin.
     ///
     /// Image data when the clipboard holds an image, and text otherwise — which

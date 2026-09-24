@@ -184,7 +184,7 @@ impl App {
 
         let labelled: Vec<(String, String)> = offered
             .iter()
-            .map(|a| (a.id.clone(), a.label.clone()))
+            .map(|a| (a.id.clone(), a.display_label(&clip)))
             .collect();
 
         log::debug!("offering {} actions for {kinds:?}", labelled.len());
