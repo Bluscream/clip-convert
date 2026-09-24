@@ -53,7 +53,11 @@ in_container() {
 
 echo "==> core crate on the host (no UI dependencies)"
 cd "$PROJECT_DIR"
-CARGO_BUILD_JOBS="$JOBS" nice -n "$NICE" cargo test -p lcc-core
+# --no-default-features drops the native input backend, which is the only part
+# of the core needing system headers. Everything else is checked here, in
+# seconds, rather than paying for a container round-trip.
+CARGO_BUILD_JOBS="$JOBS" nice -n "$NICE" \
+    cargo test -p clip-convert-core --no-default-features
 
 echo "==> format"
 in_container "cargo fmt --all --check"
