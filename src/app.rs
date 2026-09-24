@@ -9,7 +9,7 @@ use crate::prompt::Prompter;
 use anyhow::{Context, Result};
 use clipconv::action::Action;
 use clipconv::config::{self, Config};
-use clipconv::content::ContentKind;
+use clipconv::content::{Clip, ContentKind};
 use clipconv::{auto, clipboard, runner, shorten, typing};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -238,47 +238,15 @@ impl App {
             return Ok(());
         }
 
-        let labelled: Vec<clipconv::protocol::ActionEntry> = offered
-            .iter()
-            .map(|a| clipconv::protocol::ActionEntry {
-                id: a.id.clone(),
-                label: a.display_label(&clip),
-                icon: a.icon.clone(),
-            })
-            .collect();
-
-        // A default for this kind skips the menu entirely. It is ignored when
-        // the action it names is not among those offered, which happens if the
-        // config changed since it was set.
-        let source = clip.source_kind();
-        let chosen_id = match self.default_action(source) {
-            Some(id) if labelled.iter().any(|entry| entry.id == id) => {
-                log::debug!("running `{id}` without asking: it is the default for {source}");
-                id
-            }
-            _ => {
-                log::debug!("offering {} actions for {kinds:?}", labelled.len());
-                let Some(choice) =
-                    prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)
-                else {
-                    log::debug!("action menu dismissed");
-                    return Ok(());
-                };
-
-                if choice.paste_after != config.paste_after_action {
-                    self.set_paste_after(choice.paste_after);
-                }
-                choice.action_id
-            }
+        let Some(chosen_id) = self.choose(&clip, &offered, &config, prompter) else {
+            log::debug!("action menu dismissed");
+            return Ok(());
         };
-        let choice = clipconv::protocol::ActionChoice {
-            action_id: chosen_id,
-            paste_after: self.config().paste_after_action,
-        };
+        let paste_after = self.config().paste_after_action;
 
-        log::debug!("chose {}", choice.action_id);
-        let Some(action) = offered.iter().find(|a| a.id == choice.action_id) else {
-            log::warn!("chosen action {} vanished", choice.action_id);
+        log::debug!("chose {chosen_id}");
+        let Some(action) = offered.iter().find(|a| a.id == chosen_id) else {
+            log::warn!("chosen action {chosen_id} vanished");
             return Ok(());
         };
 
@@ -303,13 +271,53 @@ impl App {
             }
         }
 
-        if choice.paste_after && outcome.clipboard_changed {
+        if paste_after && outcome.clipboard_changed {
             typing::press_paste(&config.commands).context("pasting after the action")?;
         }
 
         log::info!("{} finished: {}", action.id, outcome.message);
         notify(&action.label, &outcome.message);
         Ok(())
+    }
+
+    /// Works out which action to run: the session default for this content's
+    /// source kind, or whatever the user picks from the menu.
+    ///
+    /// Returns `None` when the menu was dismissed.
+    fn choose(
+        &self,
+        clip: &Clip,
+        offered: &[&Action],
+        config: &Config,
+        prompter: &Prompter,
+    ) -> Option<String> {
+        let labelled: Vec<clipconv::protocol::ActionEntry> = offered
+            .iter()
+            .map(|a| clipconv::protocol::ActionEntry {
+                id: a.id.clone(),
+                label: a.display_label(clip),
+                icon: a.icon.clone(),
+            })
+            .collect();
+
+        // A default for this kind skips the menu entirely. It is ignored when
+        // the action it names is not among those offered, which happens if the
+        // config changed since it was set.
+        let source = clip.source_kind();
+        if let Some(id) = self.default_action(source) {
+            if labelled.iter().any(|entry| entry.id == id) {
+                log::debug!("running `{id}` without asking: it is the default for {source}");
+                return Some(id);
+            }
+        }
+
+        log::debug!("offering {} actions for this clipboard", labelled.len());
+        let choice =
+            prompter.choose_action(&clip.describe(), &labelled, config.paste_after_action)?;
+        if choice.paste_after != config.paste_after_action {
+            self.set_paste_after(choice.paste_after);
+        }
+        Some(choice.action_id)
     }
 
     /// The clipboard pipeline: shorten a newly copied URL, if it qualifies.
