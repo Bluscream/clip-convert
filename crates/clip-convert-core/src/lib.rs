@@ -13,6 +13,7 @@ pub mod content;
 pub mod encode;
 pub mod exec;
 pub mod files;
+pub mod icons;
 pub mod image;
 pub mod presets;
 pub mod protocol;

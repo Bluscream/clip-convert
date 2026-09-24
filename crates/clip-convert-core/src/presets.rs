@@ -27,20 +27,59 @@ pub enum Fit {
 pub struct Preset {
     pub id: String,
     pub label: String,
+    /// Widest the result may be. Zero leaves the width alone.
+    #[serde(default)]
     pub width: u32,
+    /// Tallest the result may be. Zero leaves the height alone.
+    #[serde(default)]
     pub height: u32,
     /// Upper bound on the encoded file size, in bytes. Zero means unconstrained.
     #[serde(default)]
     pub max_bytes: u64,
-    /// Output container, as an `ImageMagick` format name.
-    pub format: String,
+    /// Output container. Absent keeps whatever the source already was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     #[serde(default)]
     pub fit: Fit,
+    /// A small picture shown on this target's button.
+    ///
+    /// May be written as base64, a `data:` URI, an `http(s)` URL or a local
+    /// path; anything not already base64 is converted once and written back
+    /// here, so it is never fetched again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+impl Preset {
+    /// Whether this target constrains the picture's dimensions at all.
+    #[must_use]
+    pub fn constrains_size(&self) -> bool {
+        self.width > 0 && self.height > 0
+    }
+
+    /// The box to fit inside, given the source's own dimensions.
+    ///
+    /// An unset axis is not a limit, so the source's own size stands in for it.
+    #[must_use]
+    pub fn box_for(&self, source_width: u32, source_height: u32) -> (u32, u32) {
+        (
+            if self.width == 0 {
+                source_width
+            } else {
+                self.width
+            },
+            if self.height == 0 {
+                source_height
+            } else {
+                self.height
+            },
+        )
+    }
 }
 
 /// The factory presets as plain data: id, label, width, height, max bytes,
 /// format, and whether the canvas size is mandatory.
-const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 10] = [
+const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
     (
         "discord",
         "Discord sticker",
@@ -131,6 +170,17 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 10] = [
         "webp",
         Fit::Inside,
     ),
+    // Not a sticker: Discord's plain attachment limit. Caps the file size and
+    // changes nothing else — no scaling, no re-encoding to another format.
+    (
+        "discord-file",
+        "Discord file",
+        0,
+        0,
+        10 * 1024 * 1024,
+        "",
+        Fit::Inside,
+    ),
 ];
 
 /// The presets shipped in a freshly written config file.
@@ -145,8 +195,9 @@ pub fn factory() -> Vec<Preset> {
                 width,
                 height,
                 max_bytes,
-                format: format.to_string(),
+                format: (!format.is_empty()).then(|| format.to_string()),
                 fit,
+                icon: None,
             },
         )
         .collect()
@@ -154,18 +205,30 @@ pub fn factory() -> Vec<Preset> {
 
 impl Preset {
     /// A one-line summary for the chooser, e.g. `512×512 · WEBP · max 512 KB`.
+    ///
+    /// Only mentions what the target actually constrains, so a size-only target
+    /// does not claim dimensions it leaves alone.
     #[must_use]
     pub fn summary(&self) -> String {
-        let format = self.format.to_uppercase();
-        if self.max_bytes == 0 {
-            format!("{}×{} · {format}", self.width, self.height)
+        let mut parts = Vec::new();
+
+        if self.constrains_size() {
+            parts.push(format!("{}×{}", self.width, self.height));
+        }
+        if let Some(format) = self.format.as_ref() {
+            parts.push(format.to_uppercase());
+        }
+        if self.max_bytes > 0 {
+            parts.push(format!(
+                "max {}",
+                crate::content::human_bytes(usize::try_from(self.max_bytes).unwrap_or(usize::MAX))
+            ));
+        }
+
+        if parts.is_empty() {
+            "unchanged".to_string()
         } else {
-            format!(
-                "{}×{} · {format} · max {} KB",
-                self.width,
-                self.height,
-                self.max_bytes / 1024
-            )
+            parts.join(" · ")
         }
     }
 }
@@ -210,10 +273,50 @@ mod tests {
     #[test]
     fn factory_presets_are_all_usable() {
         for preset in factory() {
-            assert!(preset.width > 0 && preset.height > 0, "{}", preset.id);
-            assert!(!preset.format.is_empty(), "{}", preset.id);
             assert!(!preset.label.is_empty(), "{}", preset.id);
+            assert!(
+                preset.format.as_ref().is_none_or(|f| !f.is_empty()),
+                "{} has an empty format, which is neither a format nor absent",
+                preset.id
+            );
+            // Every target must constrain something, or choosing it does
+            // nothing at all.
+            assert!(
+                preset.constrains_size() || preset.max_bytes > 0,
+                "{} constrains neither size nor dimensions",
+                preset.id
+            );
+            // A single axis is not a box; it is almost certainly a typo.
+            assert_eq!(
+                preset.width == 0,
+                preset.height == 0,
+                "{} sets only one dimension",
+                preset.id
+            );
         }
+    }
+
+    #[test]
+    fn a_size_only_target_constrains_nothing_else() {
+        let preset = factory()
+            .into_iter()
+            .find(|p| p.id == "discord-file")
+            .expect("the size-only target should exist");
+
+        assert!(!preset.constrains_size());
+        assert_eq!(preset.format, None, "it must keep the source format");
+        assert_eq!(preset.max_bytes, 10 * 1024 * 1024);
+        // An unconstrained axis takes the source's own size.
+        assert_eq!(preset.box_for(1920, 1080), (1920, 1080));
+    }
+
+    #[test]
+    fn a_constrained_axis_overrides_the_source() {
+        let preset = factory()
+            .into_iter()
+            .find(|p| p.id == "discord")
+            .expect("discord sticker");
+        assert_eq!(preset.box_for(1920, 1080), (320, 320));
     }
 
     #[derive(serde::Deserialize)]
@@ -265,6 +368,13 @@ mod tests {
     #[test]
     fn summary_reports_the_size_cap() {
         let preset = &factory()[0];
-        assert_eq!(preset.summary(), "320×320 · PNG · max 512 KB");
+        assert_eq!(preset.summary(), "320×320 · PNG · max 512.0 KB");
+
+        // A size-only target mentions only what it constrains.
+        let size_only = factory()
+            .into_iter()
+            .find(|p| p.id == "discord-file")
+            .expect("size-only target");
+        assert_eq!(size_only.summary(), "max 10.0 MB");
     }
 }

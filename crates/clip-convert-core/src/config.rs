@@ -226,6 +226,7 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         input: InputMode::default(),
         output: OutputMode::default(),
         enabled: true,
+        icon: None,
     };
 
     vec![
@@ -335,10 +336,51 @@ impl Config {
         Ok(crate::action::validate_all(&self.actions)?)
     }
 
+    /// Converts every icon written as a URL or a path into base64, in place.
+    ///
+    /// Returns whether anything changed, so the caller knows to save. Doing
+    /// this once at load means the config keeps working if the source moves,
+    /// and that opening a menu never touches the network or the disk.
+    ///
+    /// A broken icon is dropped with a warning rather than failing the load: a
+    /// missing picture is not a reason to refuse to start.
+    pub fn resolve_icons(&mut self) -> bool {
+        let mut changed = false;
+
+        for preset in &mut self.presets {
+            changed |= resolve_icon(&mut preset.icon, "preset", &preset.id);
+        }
+        for action in &mut self.actions {
+            changed |= resolve_icon(&mut action.icon, "action", &action.id);
+        }
+        changed
+    }
+
     /// The shorteners `Shorten` and auto-shorten are allowed to pick from.
     #[must_use]
     pub fn active_shorteners(&self) -> Vec<&Shortener> {
         self.shorteners.iter().filter(|s| s.enabled).collect()
+    }
+}
+
+/// Resolves one icon field, reporting what happened.
+fn resolve_icon(icon: &mut Option<String>, what: &str, id: &str) -> bool {
+    let Some(raw) = icon.clone() else {
+        return false;
+    };
+
+    match crate::icons::resolve(&raw) {
+        Ok(Some(encoded)) => {
+            log::info!("{what} `{id}`: icon converted and cached in the config");
+            *icon = Some(encoded);
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            log::warn!("{what} `{id}`: ignoring its icon: {e}");
+            *icon = None;
+            true
+        }
     }
 }
 
@@ -588,6 +630,7 @@ mod tests {
             input: InputMode::Stdin,
             output: OutputMode::Clipboard,
             enabled: true,
+            icon: None,
         });
         config.auto_shorten = false;
         save_to(&path, &config).expect("save");

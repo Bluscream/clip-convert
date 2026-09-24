@@ -19,6 +19,7 @@ anyhow.workspace = true
 log.workspace = true
 env_logger = "0.11"
 serde_json = "1.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 egui = "0.29"
 # glow (OpenGL) rather than wgpu: lighter and faster to open, and this draws
 # four dialogs, not a 3D scene.

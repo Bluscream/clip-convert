@@ -41,6 +41,22 @@ impl Format {
         }
     }
 
+    /// The format of an already-encoded image, where this can write it.
+    ///
+    /// Used to honour a target that asks to keep whatever format the source
+    /// already was.
+    #[must_use]
+    pub fn from_guess(format: image::ImageFormat) -> Option<Self> {
+        match format {
+            image::ImageFormat::Png => Some(Self::Png),
+            image::ImageFormat::Jpeg => Some(Self::Jpeg),
+            image::ImageFormat::WebP => Some(Self::Webp),
+            image::ImageFormat::Gif => Some(Self::Gif),
+            // Readable but not writable here; the caller picks a default.
+            _ => None,
+        }
+    }
+
     /// The MIME type to put on the clipboard.
     #[must_use]
     pub fn mime(self) -> &'static str {

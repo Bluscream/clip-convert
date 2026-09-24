@@ -636,6 +636,7 @@ name = "clip-convert-core"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64",
  "color_quant",
  "enigo",
  "image",
@@ -666,6 +667,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "image",
  "log",
  "serde_json",
 ]

@@ -78,6 +78,16 @@ pub struct Answer {
     pub size: Option<WindowSize>,
 }
 
+/// One entry in the action menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionEntry {
+    pub id: String,
+    pub label: String,
+    /// Base64 image data drawn to the left of the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
 /// What the daemon wants shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "dialog", rename_all = "snake_case")]
@@ -86,8 +96,8 @@ pub enum Request {
     ChooseAction {
         /// Summary line: what is on the clipboard.
         description: String,
-        /// `(id, label)` for each action, in config order.
-        actions: Vec<(String, String)>,
+        /// The actions to offer, in config order.
+        actions: Vec<ActionEntry>,
         /// Remembered state of the "Paste after action" checkbox.
         paste_after: bool,
     },
@@ -180,7 +190,11 @@ mod tests {
         let requests = [
             Request::ChooseAction {
                 description: "Text · 99 characters".to_string(),
-                actions: vec![("type".to_string(), "Type".to_string())],
+                actions: vec![ActionEntry {
+                    id: "type".to_string(),
+                    label: "Type".to_string(),
+                    icon: None,
+                }],
                 paste_after: true,
             },
             Request::AskLimit {

@@ -106,6 +106,7 @@ struct Dialog {
     state: ui::State,
     outcome: Arc<Mutex<Option<Reply>>>,
     size: Arc<Mutex<Option<WindowSize>>>,
+    icons: ui::Icons,
 }
 
 impl Dialog {
@@ -119,6 +120,7 @@ impl Dialog {
             request,
             outcome,
             size,
+            icons: ui::Icons::default(),
         }
     }
 
@@ -145,7 +147,7 @@ impl eframe::App for Dialog {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.remember_size(ctx);
 
-        if let Some(reply) = ui::show(&self.request, &mut self.state, ctx) {
+        if let Some(reply) = ui::show(&self.request, &mut self.state, &mut self.icons, ctx) {
             if let Ok(mut slot) = self.outcome.lock() {
                 *slot = Some(reply);
             }

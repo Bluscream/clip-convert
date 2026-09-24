@@ -5,7 +5,8 @@
 //! of widgets that have to be built, bound and torn down.
 
 use clipconv::presets::{Fit, Preset};
-use clipconv::protocol::{ActionChoice, Reply, Request};
+use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
+use std::collections::HashMap;
 
 /// Width of a dialog, in logical points.
 const DIALOG_WIDTH: f32 = 460.0;
@@ -15,6 +16,15 @@ const WIDE_DIALOG_WIDTH: f32 = 680.0;
 
 /// How many columns the resize chooser uses.
 const PRESET_COLUMNS: usize = 2;
+
+/// Edge length of a button's icon, in logical points.
+const ICON_SIZE: f32 = 28.0;
+
+/// Gap between an icon and the label beside it.
+const ICON_GAP: f32 = 12.0;
+
+/// Breathing room inside a button, either side of its contents.
+const BUTTON_PADDING: f32 = 14.0;
 
 /// Size of a preset's name.
 const PRESET_TITLE: f32 = 15.0;
@@ -115,8 +125,119 @@ pub fn window_height(request: &Request) -> f32 {
     }
 }
 
+/// Decoded icons, kept for the life of the dialog.
+///
+/// A texture must be uploaded once and reused: decoding and uploading on every
+/// frame would make redrawing far more expensive than it needs to be.
+#[derive(Default)]
+pub struct Icons {
+    textures: HashMap<String, Option<egui::TextureHandle>>,
+}
+
+impl Icons {
+    /// The texture for a base64 icon, decoding it the first time it is needed.
+    ///
+    /// A failure is cached too, so a broken icon is not retried every frame.
+    fn get(
+        &mut self,
+        ctx: &egui::Context,
+        key: &str,
+        encoded: &str,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(cached) = self.textures.get(key) {
+            return cached.clone();
+        }
+
+        let handle = clipconv::icons::decode(encoded)
+            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+            .map(|decoded| {
+                let rgba = decoded.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                ctx.load_texture(key, image, egui::TextureOptions::LINEAR)
+            });
+
+        if handle.is_none() {
+            log::warn!("could not decode the icon for `{key}`");
+        }
+        self.textures.insert(key.to_string(), handle.clone());
+        handle
+    }
+}
+
+/// A button with an optional icon to the left of its text, the pair centred.
+///
+/// Drawn rather than composed from `Button::image_and_text`, which aligns its
+/// contents to the left edge. Centring the icon and label as one group is what
+/// keeps a menu of mixed entries — some with icons, some without — looking like
+/// one list.
+fn icon_button(
+    ui: &mut egui::Ui,
+    icons: &mut Icons,
+    key: &str,
+    icon: Option<&str>,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let texture = icon.and_then(|encoded| icons.get(ui.ctx(), key, encoded));
+    let width = ui.available_width();
+
+    let Some(texture) = texture else {
+        return ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap());
+    };
+
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, BUTTON_HEIGHT), egui::Sense::click());
+
+    // The label has to fit in what is left once the icon and its gap are taken.
+    let text_limit = (width - ICON_SIZE - ICON_GAP - BUTTON_PADDING * 2.0).max(1.0);
+    let galley = text.into().into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        text_limit,
+        egui::TextStyle::Button,
+    );
+
+    if ui.is_rect_visible(rect) {
+        // Painted with the same visuals a real button would use, so it responds
+        // to hover and focus like every other control.
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect(
+            rect.expand(visuals.expansion),
+            visuals.rounding,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+        );
+
+        let group_width = ICON_SIZE + ICON_GAP + galley.size().x;
+        let left = rect.center().x - group_width / 2.0;
+
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(left, rect.center().y - ICON_SIZE / 2.0),
+            egui::vec2(ICON_SIZE, ICON_SIZE),
+        );
+        // White tint means "draw it as it is"; egui would otherwise recolour the
+        // icon to match the label and flatten a colourful one.
+        egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture))
+            .tint(egui::Color32::WHITE)
+            .paint_at(ui, icon_rect);
+
+        let text_pos = egui::pos2(
+            left + ICON_SIZE + ICON_GAP,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(text_pos, galley, visuals.text_color());
+    }
+
+    response
+}
+
 /// Draws the dialog. Returns a reply once the user has finished with it.
-pub fn show(request: &Request, state: &mut State, ctx: &egui::Context) -> Option<Reply> {
+pub fn show(
+    request: &Request,
+    state: &mut State,
+    icons: &mut Icons,
+    ctx: &egui::Context,
+) -> Option<Reply> {
     let mut reply = None;
 
     egui::CentralPanel::default()
@@ -130,12 +251,12 @@ pub fn show(request: &Request, state: &mut State, ctx: &egui::Context) -> Option
                         ..
                     },
                     State::ChooseAction { paste_after },
-                ) => choose_action(ui, description, actions, paste_after),
+                ) => choose_action(ui, description, actions, paste_after, icons),
                 (Request::AskLimit { message, .. }, State::AskLimit { value }) => {
                     ask_limit(ui, message, value)
                 }
                 (Request::AskResizeTarget { presets }, State::AskResizeTarget { custom }) => {
-                    ask_resize_target(ui, presets, custom)
+                    ask_resize_target(ui, presets, custom, icons)
                 }
                 (Request::ShowError { message }, State::ShowError) => show_error(ui, message),
                 // The state is always built from the request, so this cannot
@@ -170,7 +291,7 @@ fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 /// A `LayoutJob` rather than one string, because the two lines need different
 /// sizes and weights — the name is what is being chosen, the limits are there
 /// so choosing does not require remembering each platform's rules.
-fn preset_button(ui: &mut egui::Ui, preset: &Preset) -> egui::Response {
+fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui::Response {
     let mut text = egui::text::LayoutJob::default();
     text.append(
         &preset.label,
@@ -193,8 +314,7 @@ fn preset_button(ui: &mut egui::Ui, preset: &Preset) -> egui::Response {
         },
     );
 
-    let width = ui.available_width();
-    ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
+    icon_button(ui, icons, &preset.id, preset.icon.as_deref(), text)
 }
 
 /// A bold line summarising what is on the clipboard.
@@ -206,8 +326,9 @@ fn heading(ui: &mut egui::Ui, text: &str) {
 fn choose_action(
     ui: &mut egui::Ui,
     description: &str,
-    actions: &[(String, String)],
+    actions: &[ActionEntry],
     paste_after: &mut bool,
+    icons: &mut Icons,
 ) -> Option<Reply> {
     heading(ui, description);
 
@@ -224,9 +345,12 @@ fn choose_action(
         });
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (id, label) in actions {
-            if wide_button(ui, label).clicked() {
-                chosen = Some(id.clone());
+        for action in actions {
+            let text = egui::RichText::new(&action.label)
+                .size(BUTTON_TEXT)
+                .strong();
+            if icon_button(ui, icons, &action.id, action.icon.as_deref(), text).clicked() {
+                chosen = Some(action.id.clone());
             }
             ui.add_space(BUTTON_GAP);
         }
@@ -290,6 +414,7 @@ fn ask_resize_target(
     ui: &mut egui::Ui,
     presets: &[Preset],
     custom: &mut Option<CustomSize>,
+    icons: &mut Icons,
 ) -> Option<Reply> {
     if let Some(fields) = custom.as_mut() {
         return custom_size(ui, fields);
@@ -305,7 +430,7 @@ fn ask_resize_target(
         for row in presets.chunks(PRESET_COLUMNS) {
             ui.columns(PRESET_COLUMNS, |columns| {
                 for (column, preset) in columns.iter_mut().zip(row) {
-                    if preset_button(column, preset).clicked() {
+                    if preset_button(column, icons, preset).clicked() {
                         chosen = Some(preset.clone());
                     }
                 }
@@ -382,12 +507,13 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
                         width,
                         height,
                         max_bytes: max_kb * 1024,
-                        format: fields.format.clone(),
+                        format: Some(fields.format.clone()),
                         fit: if fields.exact {
                             Fit::Exact
                         } else {
                             Fit::Inside
                         },
+                        icon: None,
                     }),
                 });
             }
@@ -414,9 +540,13 @@ fn show_error(ui: &mut egui::Ui, message: &str) -> Option<Reply> {
 mod tests {
     use super::*;
 
-    fn actions(n: usize) -> Vec<(String, String)> {
+    fn actions(n: usize) -> Vec<ActionEntry> {
         (0..n)
-            .map(|i| (format!("id{i}"), format!("Action {i}")))
+            .map(|i| ActionEntry {
+                id: format!("id{i}"),
+                label: format!("Action {i}"),
+                icon: None,
+            })
             .collect()
     }
 

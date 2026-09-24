@@ -314,10 +314,19 @@ fn resize_file(
     let bytes = std::fs::read(source).map_err(RunError::TempFile)?;
     let resized = image::resize(&bytes, target)?;
 
+    // A target that keeps the source's format has no extension of its own, so
+    // the result keeps the one it came in with.
+    let extension = target.format.clone().unwrap_or_else(|| {
+        source
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase()
+    });
     let output = directory.join(crate::scratch::output_name(
         source,
         &target.label,
-        &target.format,
+        &extension,
     ));
     std::fs::write(&output, &resized.bytes).map_err(RunError::TempFile)?;
     Ok(output)
@@ -444,6 +453,7 @@ mod tests {
             input,
             output,
             enabled: true,
+            icon: None,
         })
         .expect("valid action")
     }
@@ -458,6 +468,7 @@ mod tests {
             input: InputMode::default(),
             output: OutputMode::default(),
             enabled: true,
+            icon: None,
         })
         .expect("valid action")
     }
@@ -492,8 +503,9 @@ mod tests {
             width: 32,
             height: 32,
             max_bytes: 0,
-            format: "png".to_string(),
+            format: Some("png".to_string()),
             fit: crate::presets::Fit::Inside,
+            icon: None,
         }
     }
 

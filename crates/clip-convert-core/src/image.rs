@@ -80,15 +80,41 @@ pub struct Resized {
 /// write, and [`ImageError::TooLarge`] if no combination of quality and scale
 /// met the file-size cap.
 pub fn resize(source: &[u8], target: &Preset) -> Result<Resized, ImageError> {
-    let format = Format::parse(&target.format)
-        .ok_or_else(|| ImageError::UnknownFormat(target.format.clone()))?;
+    // A target that names no format keeps whatever the source already is, so a
+    // size-only target does not silently re-encode a JPEG as a PNG.
+    let source_format = image::guess_format(source)
+        .ok()
+        .and_then(Format::from_guess);
+    let format = match target.format.as_deref() {
+        Some(name) => {
+            Format::parse(name).ok_or_else(|| ImageError::UnknownFormat(name.to_string()))?
+        }
+        None => source_format.unwrap_or(Format::Png),
+    };
+
     let decoded = image::load_from_memory(source).map_err(ImageError::Decode)?;
     let (source_width, source_height) = decoded.dimensions();
 
-    let exact_canvas = target.fit == Fit::Exact;
+    // Nothing to change: no dimension limit, no format change, and the source
+    // already fits. Returning it untouched avoids a pointless re-encode that
+    // could only lose quality.
+    let unchanged = !target.constrains_size()
+        && target.format.is_none()
+        && (target.max_bytes == 0 || source.len() as u64 <= target.max_bytes);
+    if unchanged {
+        log::debug!("already satisfies {}", target.label);
+        return Ok(Resized {
+            bytes: source.to_vec(),
+            mime: format.mime().to_string(),
+            width: source_width,
+            height: source_height,
+        });
+    }
+
+    // An exact canvas only means anything when one is actually specified.
+    let exact_canvas = target.fit == Fit::Exact && target.constrains_size();
     let mut best_seen = usize::MAX;
-    let mut box_width = target.width;
-    let mut box_height = target.height;
+    let (mut box_width, mut box_height) = target.box_for(source_width, source_height);
 
     // An exact-canvas preset gets a single pass: quality is the only lever it is
     // allowed to pull.
@@ -137,11 +163,12 @@ pub fn resize(source: &[u8], target: &Preset) -> Result<Resized, ImageError> {
         }
     }
 
+    let (width, height) = target.box_for(source_width, source_height);
     Err(ImageError::TooLarge {
         limit: usize::try_from(target.max_bytes).unwrap_or(usize::MAX),
         best: best_seen,
-        width: target.width,
-        height: target.height,
+        width,
+        height,
         canvas_is_fixed: exact_canvas,
     })
 }
@@ -200,8 +227,9 @@ mod tests {
             width,
             height,
             max_bytes,
-            format: format.to_string(),
+            format: Some(format.to_string()),
             fit,
+            icon: None,
         }
     }
 
@@ -328,15 +356,20 @@ mod tests {
         for target in presets::factory() {
             let out = resize(&source, &target)
                 .unwrap_or_else(|e| panic!("preset {} failed: {e}", target.id));
-            assert!(
-                out.width <= target.width && out.height <= target.height,
-                "{}",
-                target.id
-            );
+            if target.constrains_size() {
+                assert!(
+                    out.width <= target.width && out.height <= target.height,
+                    "{}",
+                    target.id
+                );
+            } else {
+                // A size-only target leaves the picture's dimensions alone.
+                assert_eq!((out.width, out.height), (1200, 900), "{}", target.id);
+            }
             if target.max_bytes > 0 {
                 assert!(out.bytes.len() as u64 <= target.max_bytes, "{}", target.id);
             }
-            if target.fit == Fit::Exact {
+            if target.fit == Fit::Exact && target.constrains_size() {
                 assert_eq!(
                     (out.width, out.height),
                     (target.width, target.height),

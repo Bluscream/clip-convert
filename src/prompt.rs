@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use clipconv::exec;
 use clipconv::presets::Preset;
-use clipconv::protocol::{ActionChoice, Answer, Ask, Reply, Request, WindowSize};
+use clipconv::protocol::{ActionChoice, ActionEntry, Answer, Ask, Reply, Request, WindowSize};
 use clipconv::runner::Prompt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,7 +132,7 @@ impl Prompter {
     pub fn choose_action(
         &self,
         description: &str,
-        actions: &[(String, String)],
+        actions: &[ActionEntry],
         paste_after: bool,
     ) -> Option<ActionChoice> {
         match self.ask(&Request::ChooseAction {
@@ -271,7 +271,11 @@ mod tests {
         let choice = prompter
             .choose_action(
                 "d",
-                &[("truncate".to_string(), "Truncate".to_string())],
+                &[ActionEntry {
+                    id: "truncate".to_string(),
+                    label: "Truncate".to_string(),
+                    icon: None,
+                }],
                 true,
             )
             .expect("a choice");

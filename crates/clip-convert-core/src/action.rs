@@ -90,6 +90,13 @@ pub struct ActionSpec {
     /// Set false to keep an entry in the file but hide it from the menu.
     #[serde(default = "crate::config::default_true")]
     pub enabled: bool,
+    /// A small picture shown on this action's button.
+    ///
+    /// May be written as base64, a `data:` URI, an `http(s)` URL or a local
+    /// path; anything not already base64 is converted once and written back
+    /// here, so it is never fetched again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl Builtin {
@@ -126,6 +133,8 @@ pub struct Action {
     pub label: String,
     pub kinds: BTreeSet<ContentKind>,
     pub run: Run,
+    /// Base64 image data for the button, if one was configured.
+    pub icon: Option<String>,
 }
 
 /// Why an `[[actions]]` entry could not be used.
@@ -187,6 +196,7 @@ impl Action {
             id,
             label: spec.label.trim().to_string(),
             run,
+            icon: spec.icon.clone(),
         })
     }
 
@@ -301,6 +311,7 @@ mod tests {
             input: InputMode::default(),
             output: OutputMode::default(),
             enabled: true,
+            icon: None,
         }
     }
 

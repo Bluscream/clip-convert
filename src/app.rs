@@ -46,8 +46,17 @@ impl App {
     ///
     /// Returns an error if the config file cannot be read or is invalid.
     pub fn load(config_path: PathBuf, modifiers: Arc<Modifiers>) -> Result<Self> {
-        let config = config::load_from(&config_path)
+        let mut config = config::load_from(&config_path)
             .with_context(|| format!("loading {}", config_path.display()))?;
+
+        // Icons written as a URL or a path are fetched once and stored back as
+        // base64, so later runs never need the original.
+        if config.resolve_icons() {
+            if let Err(e) = config::save_to(&config_path, &config) {
+                log::warn!("could not cache resolved icons: {e}");
+            }
+        }
+
         let actions = config.validate().context("validating the configuration")?;
 
         Ok(Self {
@@ -229,9 +238,13 @@ impl App {
             return Ok(());
         }
 
-        let labelled: Vec<(String, String)> = offered
+        let labelled: Vec<clipconv::protocol::ActionEntry> = offered
             .iter()
-            .map(|a| (a.id.clone(), a.display_label(&clip)))
+            .map(|a| clipconv::protocol::ActionEntry {
+                id: a.id.clone(),
+                label: a.display_label(&clip),
+                icon: a.icon.clone(),
+            })
             .collect();
 
         // A default for this kind skips the menu entirely. It is ignored when
@@ -239,7 +252,7 @@ impl App {
         // config changed since it was set.
         let source = clip.source_kind();
         let chosen_id = match self.default_action(source) {
-            Some(id) if labelled.iter().any(|(known, _)| *known == id) => {
+            Some(id) if labelled.iter().any(|entry| entry.id == id) => {
                 log::debug!("running `{id}` without asking: it is the default for {source}");
                 id
             }
