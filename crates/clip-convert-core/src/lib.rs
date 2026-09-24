@@ -10,6 +10,7 @@ pub mod auto;
 pub mod clipboard;
 pub mod config;
 pub mod content;
+pub mod encode;
 pub mod exec;
 pub mod image;
 pub mod presets;

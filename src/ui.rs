@@ -7,8 +7,8 @@
 //! and blocks on it; the GTK thread shows the dialog and sends the answer back.
 
 use crate::dialog::{self, ActionChoice};
-use lcc_core::presets::Preset;
-use lcc_core::runner::Prompt;
+use clipconv::presets::Preset;
+use clipconv::runner::Prompt;
 use std::sync::mpsc::{self, Sender};
 
 /// Something a worker needs the GTK thread to show.

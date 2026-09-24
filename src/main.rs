@@ -19,8 +19,8 @@ mod ui;
 
 use anyhow::{Context, Result};
 use app::App;
+use clipconv::clipboard;
 use hotkey::Modifiers;
-use lcc_core::clipboard;
 use std::sync::mpsc;
 use std::sync::Arc;
 use tray::TrayCommand;
@@ -28,7 +28,7 @@ use ui::{Ui, UiRequest};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("linux_clip_convert=info,lcc_core=info"),
+        env_logger::Env::default().default_filter_or("linux_clip_convert=info,clipconv=info"),
     )
     .init();
 
@@ -41,7 +41,7 @@ fn main() -> Result<()> {
     dialog::install_css();
 
     let modifiers = Arc::new(Modifiers::default());
-    let config_path = lcc_core::config::config_path();
+    let config_path = clipconv::config::config_path();
     log::info!("configuration: {}", config_path.display());
 
     let app = Arc::new(App::load(config_path, Arc::clone(&modifiers))?);

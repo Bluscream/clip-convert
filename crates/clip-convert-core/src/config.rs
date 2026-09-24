@@ -19,63 +19,29 @@ pub(crate) const fn default_true() -> bool {
     true
 }
 
-/// External programs the built-in actions drive.
+/// Optional overrides for the built-in input backend.
+///
+/// Everything is native and cross-platform by default, so all of these are
+/// `None` and the config file does not need a `[commands]` section at all.
+///
+/// They exist for Wayland, where synthesising input from an ordinary client is
+/// forbidden and an external helper such as `ydotool` is the only route, and for
+/// anyone who wants to substitute their own tool.
 ///
 /// These are argument vectors rather than shell strings, so clipboard content
-/// never reaches a shell. `{...}` placeholders are substituted by the caller.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// never reaches a shell. `{delay}` is substituted with the per-key delay.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Commands {
-    /// Types text read from standard input. `{delay}` is the per-key delay in ms.
-    pub type_text: Vec<String>,
+    /// Types text read from standard input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_text: Option<Vec<String>>,
     /// Presses Return, used between the pieces of a split.
-    pub key_enter: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_enter: Option<Vec<String>>,
     /// Presses the paste chord, used by "Paste after action".
-    pub key_paste: Vec<String>,
-    /// Prints `WIDTH HEIGHT` for `{input}`.
-    pub identify: Vec<String>,
-    /// Scales `{input}` to `{geometry}` at `{quality}`, writing `{output}`.
-    pub convert_inside: Vec<String>,
-    /// As above, then pads to exactly `{width}x{height}` on a transparent canvas.
-    pub convert_exact: Vec<String>,
-}
-
-impl Default for Commands {
-    fn default() -> Self {
-        let v = |parts: &[&str]| parts.iter().map(|s| (*s).to_string()).collect();
-        Self {
-            // ydotool works under Wayland, where a compositor will not let an
-            // ordinary client synthesise input. It needs ydotoold running.
-            type_text: v(&["ydotool", "type", "--key-delay", "{delay}", "--file", "-"]),
-            key_enter: v(&["ydotool", "key", "28:1", "28:0"]),
-            key_paste: v(&["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]),
-            identify: v(&["magick", "identify", "-format", "%w %h", "{input}"]),
-            convert_inside: v(&[
-                "magick",
-                "{input}",
-                "-resize",
-                "{geometry}",
-                "-quality",
-                "{quality}",
-                "{output}",
-            ]),
-            convert_exact: v(&[
-                "magick",
-                "{input}",
-                "-resize",
-                "{geometry}",
-                "-background",
-                "none",
-                "-gravity",
-                "center",
-                "-extent",
-                "{width}x{height}",
-                "-quality",
-                "{quality}",
-                "{output}",
-            ]),
-        }
-    }
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_paste: Option<Vec<String>>,
 }
 
 /// Defaults for the `split` built-in.

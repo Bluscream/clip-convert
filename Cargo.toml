@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lcc-core"]
+members = ["crates/clip-convert-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,18 +25,18 @@ toml = "0.8"
 url = "2.5"
 
 [package]
-name = "linux-clip-convert"
+name = "clip-convert"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Clipboard action launcher for Linux: auto-shorten URLs and run configurable actions on clipboard content."
+description = "Clipboard action launcher: auto-shorten URLs and run configurable actions on clipboard content."
 
 [lints]
 workspace = true
 
 [dependencies]
-lcc-core = { path = "crates/lcc-core" }
+clip-convert-core = { path = "crates/clip-convert-core" }
 anyhow.workspace = true
 log.workspace = true
 env_logger = "0.11"

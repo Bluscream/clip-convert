@@ -52,6 +52,8 @@ pub enum RunError {
     Clipboard(#[from] clipboard::ClipboardError),
     #[error(transparent)]
     Command(#[from] exec::ExecError),
+    #[error(transparent)]
+    Typing(#[from] typing::TypingError),
     #[error("could not create a temporary file: {0}")]
     TempFile(#[source] std::io::Error),
 }
@@ -204,7 +206,7 @@ fn run_resize(
         return Ok(None);
     };
 
-    let resized = image::resize(bytes, &target, &config.commands)?;
+    let resized = image::resize(bytes, &target)?;
     clipboard::write_image(&resized.mime, &resized.bytes)?;
 
     Ok(Some(Outcome {

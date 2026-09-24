@@ -5,9 +5,9 @@
 //! top-to-bottom; the worker thread that wants an answer goes through
 //! [`crate::ui`], which marshals the request here.
 
+use clipconv::presets::{Fit, Preset};
 use gtk::prelude::*;
 use gtk::{Align, Orientation, ResponseType};
-use lcc_core::presets::{Fit, Preset};
 
 /// Width of every dialog. Wide enough for a long action label and a content
 /// summary without wrapping.

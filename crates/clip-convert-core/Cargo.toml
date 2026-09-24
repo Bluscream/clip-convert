@@ -1,0 +1,60 @@
+[package]
+name = "clip-convert-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core logic for clip-convert: config, clipboard content model, and actions. No UI dependencies."
+
+[lib]
+# Short import path: `clipconv::` rather than `clip_convert_core::`.
+name = "clipconv"
+path = "src/lib.rs"
+
+[features]
+default = ["native-input"]
+# The native input backend is the only part of this crate that needs system
+# libraries (xkbcommon, X11). Keeping it behind a feature means all the pure
+# logic — config, text, images, shorteners — still builds and tests on a host
+# without those headers, which is seconds rather than a container round-trip.
+native-input = ["dep:enigo"]
+
+[lints]
+workspace = true
+
+[dependencies]
+log.workspace = true
+regex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+url.workspace = true
+ureq = { version = "2.10", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
+imagesize = "0.13"
+rand = "0.8"
+tempfile = "3"
+wait-timeout = "0.2"
+
+# Native, cross-platform replacements for the external tools the first version
+# shelled out to.
+arboard = { version = "3.4", features = ["image-data"] }
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "tiff", "webp",
+] }
+# `image` can decode WebP but no longer encodes it, and the sticker presets need
+# WebP output. This binds libwebp, which is vendored and built from source, so it
+# still builds on all three platforms — it just needs a C compiler.
+webp = "0.3"
+color_quant = "1.1"
+png = "0.17"
+
+# `enigo` defaults to the `xdo` backend, which links the C library libxdo. The
+# pure-Rust backends are used instead so the crate builds with no C toolchain and
+# no system packages: x11rb for X11, and the Wayland backend, which includes the
+# Plasma protocols.
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo = { version = "0.2", default-features = false, features = ["wayland", "x11rb"], optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+enigo = { version = "0.2", optional = true }

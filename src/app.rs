@@ -7,10 +7,10 @@
 use crate::hotkey::Modifiers;
 use crate::ui::Ui;
 use anyhow::{Context, Result};
-use lcc_core::action::Action;
-use lcc_core::config::{self, Config};
-use lcc_core::content::Clip;
-use lcc_core::{auto, clipboard, runner, shorten, typing};
+use clipconv::action::Action;
+use clipconv::config::{self, Config};
+use clipconv::content::Clip;
+use clipconv::{auto, clipboard, runner, shorten, typing};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -166,7 +166,7 @@ impl App {
 
         let config = self.config();
         let actions = self.actions();
-        let offered = lcc_core::action::for_kind(&actions, clip.kind());
+        let offered = clipconv::action::for_kind(&actions, clip.kind());
         if offered.is_empty() {
             notify(
                 "No actions available",
