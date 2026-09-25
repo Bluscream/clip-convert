@@ -25,14 +25,13 @@ use clipconv::replace::Replacement;
 use clipconv::runner::{self, Prompt};
 use std::path::{Path, PathBuf};
 
-/// Waits for the desktop's clipboard manager to have finished with the
-/// previous test's write.
+/// Lets the desktop's clipboard manager finish with the previous test's write.
 ///
-/// On KDE the manager takes the selection over a moment after it is published,
-/// and two writes inside that window can lose one. The app never writes twice
-/// in a row like this; a test file that does needs to let it settle.
+/// The manager takes the selection over a moment after it is published. The app
+/// writes once per action and never notices; a file of tests that writes nine
+/// times in ten seconds gives it room.
 fn settle() {
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    std::thread::sleep(std::time::Duration::from_millis(150));
 }
 
 /// Answers whatever a built-in asks, so an action can run without a dialog.

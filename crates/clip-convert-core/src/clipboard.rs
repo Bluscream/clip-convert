@@ -35,7 +35,7 @@ const OFFER_POLL: Duration = Duration::from_millis(10);
 
 /// How long to let a clipboard manager take over before releasing the lock.
 #[cfg(target_os = "linux")]
-const SETTLE: Duration = Duration::from_millis(150);
+const SETTLE: Duration = Duration::from_millis(50);
 
 /// How many times a write is attempted before giving up.
 #[cfg(target_os = "linux")]
@@ -765,9 +765,16 @@ mod wayland {
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
 
-    /// The marker `wl-paste --watch` echoes on each change. Its content is
-    /// irrelevant; only the arrival of a line matters.
-    const CHANGE_MARKER: &str = "changed";
+    /// What `wl-paste --watch` runs for every clipboard change.
+    ///
+    /// It **must read its standard input**. `wl-paste` pipes the new clipboard
+    /// contents to this command, so a command that exits without reading —
+    /// `echo`, as this once was — closes the pipe early, and the program that
+    /// published the selection sees its transfer fail. That program was
+    /// usually this one: every write the app made was being killed by the app's
+    /// own watcher, which left KDE's `x-kde-onlyReplaceEmpty` placeholder
+    /// behind instead of the content.
+    const ON_CHANGE: &str = "cat >/dev/null; echo changed";
 
     /// Starts the event-driven backend, or `None` if it is not available.
     pub(super) fn start() -> Option<(Watcher, std::sync::mpsc::Receiver<()>)> {
@@ -775,7 +782,7 @@ mod wayland {
         std::env::var_os("WAYLAND_DISPLAY")?;
 
         let mut child = Command::new("wl-paste")
-            .args(["--watch", "echo", CHANGE_MARKER])
+            .args(["--watch", "sh", "-c", ON_CHANGE])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
