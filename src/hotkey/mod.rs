@@ -21,9 +21,9 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 #[cfg(not(target_os = "linux"))]
-pub use desktop::{scroll_lock_on, Modifiers};
+pub use desktop::Modifiers;
 #[cfg(target_os = "linux")]
-pub use linux::{scroll_lock_on, Modifiers};
+pub use linux::Modifiers;
 
 /// A modifier key, independent of any platform's numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

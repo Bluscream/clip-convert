@@ -6,7 +6,6 @@
 //! it builds and tests in seconds.
 
 pub mod action;
-pub mod auto;
 pub(crate) mod batch;
 pub mod clipboard;
 pub mod color;
@@ -25,7 +24,6 @@ pub mod protocol;
 pub mod replace;
 pub mod runner;
 pub mod scratch;
-pub mod shorten;
 pub mod text;
 pub mod typing;
 pub mod video;

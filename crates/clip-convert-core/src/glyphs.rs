@@ -35,7 +35,6 @@ pub fn for_builtin(builtin: Builtin) -> String {
     let mut canvas = RgbaImage::new(SIZE, SIZE);
     match builtin {
         Builtin::Type => draw_type(&mut canvas),
-        Builtin::Shorten => draw_shorten(&mut canvas),
         Builtin::Split => draw_split(&mut canvas),
         Builtin::Truncate => draw_truncate(&mut canvas),
         Builtin::Replace => draw_replace(&mut canvas),
@@ -50,13 +49,6 @@ fn draw_type(canvas: &mut RgbaImage) {
     rect(canvas, 22.0, 10.0, 42.0, 15.0);
     rect(canvas, 22.0, 49.0, 42.0, 54.0);
     rect(canvas, 29.5, 10.0, 34.5, 54.0);
-}
-
-/// A long bar becoming a short one.
-fn draw_shorten(canvas: &mut RgbaImage) {
-    rect(canvas, 6.0, 17.0, 58.0, 24.0);
-    rect(canvas, 6.0, 40.0, 30.0, 47.0);
-    arrow_left(canvas, 34.0, 43.5, 10.0);
 }
 
 /// One block cut into three pieces.
@@ -186,7 +178,6 @@ mod tests {
     fn every_builtin_has_a_drawable_icon() {
         for builtin in [
             Builtin::Type,
-            Builtin::Shorten,
             Builtin::Split,
             Builtin::Truncate,
             Builtin::Replace,
@@ -225,7 +216,6 @@ mod tests {
     fn each_builtin_gets_its_own_mark() {
         let all = [
             Builtin::Type,
-            Builtin::Shorten,
             Builtin::Split,
             Builtin::Truncate,
             Builtin::Replace,

@@ -553,7 +553,7 @@ mod tests {
         ] {
             assert!(
                 !text(input).kinds().contains(&ContentKind::Url),
-                "{input} should not be a shortenable URL"
+                "{input} should not be read as a URL"
             );
         }
     }

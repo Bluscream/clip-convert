@@ -2,19 +2,17 @@
 
 A tray application that acts on whatever is in the clipboard.
 
-Two things happen in the background:
-
-- **Copied URLs are shortened automatically**, toggleable from the tray.
-- **A global hotkey (`Ctrl+B` by default) opens a menu of actions** for the
-  current clipboard content — different actions for a URL, for text, for an
-  image, for a selection of files and for video.
+**A global hotkey (`Ctrl+B` by default) opens a menu of actions** for the
+current clipboard content — different actions for a URL, for text, for an
+image, for a selection of files and for video.
 
 Which actions exist, what they are called, in what order they appear and what
 they do is entirely config-driven. Adding your own is a few lines of TOML and a
 script; nothing needs recompiling.
 
-It began as a fork of [`yourls-tray-app`](../yourls-tray-app) and kept its
-YOURLS support, but shares no code with it any more.
+It began as a fork of [`yourls-tray-app`](../yourls-tray-app), but shares no
+code with it any more. Shortening went back the other way: that app is now a
+CLI, and this one calls it like any other configured command.
 
 ---
 
@@ -62,7 +60,6 @@ Press the hotkey and the menu lists what applies to the current content:
 | Action | Shown for | What it does |
 | :--- | :--- | :--- |
 | **Type** | anything | Types the text into the focused window one character at a time, so it lands in applications that ignore a paste. |
-| **Shorten** | a URL | Replaces the URL with a short one, picking at random among the configured shorteners. |
 | **Split** | text, a URL | Asks for a character limit, then sends the text in pieces, pressing Return between them and pausing so the receiving app keeps up. |
 | **Truncate** | text, a URL | Asks for a character limit and cuts the text to fit, marking the cut. |
 | **Replace** | text, a URL, rich text | Asks for a regular expression and a replacement — `$1` and `${name}` work — and substitutes every match. The last ten of each are remembered and offered beside the field. |
@@ -89,7 +86,7 @@ Only actions that can actually do something appear. An image gets *Resize* and
 *Convert*; it does not get *Type*, because there is no text to type, and an
 entry whose only outcome is an error box wastes the click the menu exists to
 save. The same rule hides *Convert* when nothing can convert the format in
-hand, and *Shorten* when no shortener is configured. It is applied only
+hand. It is applied only
 where it makes sense: an action that has already typed its result into the
 window is not pasted again.
 
@@ -185,15 +182,10 @@ does nothing, and a bad edit is reported without disturbing the running config.
 
 | Key | Default | Meaning |
 | :--- | :--- | :--- |
-| `auto_shorten` | `true` | Shorten URLs as they are copied. Toggled from the tray. |
 | `paste_after_action` | `true` | Remembered state of the dialog checkbox. |
 | `hotkey` | `"ctrl+b"` | `ctrl`, `shift`, `alt`, `meta`/`super`/`win`/`cmd`, plus a letter, digit, `f1`–`f12`, or a name such as `space`. |
 | `notifications` | `true` | Show a desktop notification after an action. |
-| `blacklist_regex` | `""` | URLs matching this are never auto-shortened. |
-| `bypass_shift` | `true` | Hold Shift while copying to skip auto-shortening once. |
-| `bypass_scroll_lock` | `true` | Scroll Lock disables auto-shortening entirely. |
-| `bypass_double_copy` | `true` | Copying the same URL twice leaves it alone. |
-| `ignore_ssl_errors` | `false` | Accept invalid certificates, for a self-hosted shortener. |
+| `ignore_ssl_errors` | `false` | Accept invalid certificates when fetching an icon. |
 | `type_delay_ms` | `12` | Per-key delay when typing. Raise it for apps that drop keys. |
 | `focus_restore_delay_ms` | `250` | Pause after the dialog closes, so the compositor can hand focus back before typing. |
 
@@ -207,26 +199,19 @@ and `extra_args`.
 `window_sizes` records how big each dialog was last left. Every window is
 resizable and reopens the size you left it.
 
-### Shorteners
+### Shortening a URL
 
-`Shorten` picks at random among the enabled entries.
+Not built in. It is an ordinary command action — which is the point of the
+action model, and is how the companion `yourls` CLI is wired up:
 
 ```toml
-[[shorteners]]
-name = "mine"
-kind = "yourls"
-api_url = "https://example.com/yourls-api.php"
-signature = "your-signature"
-# Links starting with this are recognised as already short, so the app never
-# shortens its own output.
-base_url = "https://example.com/"
-
-# Any program that reads a URL on stdin and prints the short one.
-[[shorteners]]
-name = "custom"
-kind = "command"
-command = ["/home/you/bin/shorten.sh"]
-base_url = "https://s.example/"
+[[actions]]
+id = "shorten"
+label = "Shorten"
+when = ["url"]
+command = ["/home/you/.local/bin/yourls"]
+input = "stdin"           # the URL goes in
+output = "clipboard"      # the short URL comes back
 ```
 
 ### Your own actions
@@ -310,14 +295,13 @@ They are split because Wayland has no operation for hiding a window — winit's
 something for the whole session. With no toolkit in the daemon there is nothing
 to hide, and nothing is held on the graphics driver while it sits in the tray.
 
-Everything is event-driven. The clipboard is watched through a change
-subscription where the platform offers one (`wl-paste --watch` on Wayland,
-costing nothing while the clipboard is idle), and the keyboard through blocking
-reads. Measured idle, with nothing happening:
+Everything is event-driven: the keyboard is read through blocking reads, and
+the clipboard is touched only when the hotkey is pressed. Measured idle, with
+nothing happening:
 
 ```
 idle CPU:    0.00% of a core
-RSS:         24 MB
+RSS:         10 MB
 descriptors: flat
 windows:     0
 ```
@@ -326,7 +310,7 @@ Three crates:
 
 | | |
 | :--- | :--- |
-| `crates/clip-convert-core` | All the logic: config, the facet content model, actions, images, conversions, video, replacements, shorteners. No UI dependencies, so it builds and tests without a desktop. |
+| `crates/clip-convert-core` | All the logic: config, the facet content model, actions, images, conversions, video, replacements. No UI dependencies, so it builds and tests without a desktop. |
 | `crates/clip-convert-dialog` | The dialog process. |
 | `src/` | The daemon. |
 
@@ -337,7 +321,7 @@ Three crates:
 
 | | Linux | Windows | macOS |
 | :--- | :--- | :--- | :--- |
-| Clipboard, images, shorteners, actions | ✅ | ✅ | ✅ |
+| Clipboard, images, conversions, actions | ✅ | ✅ | ✅ |
 | Dialogs | ✅ | ✅ | ✅ |
 | Tray | ✅ ksni | ⚠️ `tray-icon` | ⚠️ see below |
 | Hotkey | ✅ evdev | ⚠️ `global-hotkey` | ⚠️ `global-hotkey` |
@@ -355,15 +339,9 @@ Known platform limits, stated rather than papered over:
   directly. That needs membership of the `input` group:
   `sudo usermod -aG input $USER`, then log back in. The app reports it at
   startup if not.
-- **Hold-Shift-to-bypass and Scroll Lock only work on Linux.** The system
-  shortcut APIs used elsewhere report only the registered chord, never key
-  state, so those rules report "not held" rather than guessing.
 - **macOS requires the tray on the main thread**, which is an unresolved
   conflict with how the daemon starts it. The app runs without a tray icon
   rather than pretending to work.
-- Killing the daemon with `SIGKILL` leaves its `wl-paste` helper behind, because
-  no destructor can run. It exits by itself at the next clipboard change.
-  `SIGTERM` and Quit shut down cleanly.
 
 ---
 

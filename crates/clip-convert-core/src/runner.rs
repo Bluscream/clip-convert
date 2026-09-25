@@ -10,7 +10,7 @@ use crate::clipboard;
 use crate::config::Config;
 use crate::content::Clip;
 use crate::presets::Preset;
-use crate::{exec, image, shorten, text, typing};
+use crate::{exec, image, text, typing};
 use std::time::Duration;
 
 /// How long a user-configured command may run.
@@ -58,8 +58,6 @@ pub enum RunError {
     NotTextual,
     #[error("`{label}` does not apply to this clipboard content")]
     WrongKind { label: String },
-    #[error(transparent)]
-    Shorten(#[from] shorten::ShortenError),
     #[error(transparent)]
     Image(#[from] image::ImageError),
     #[error(transparent)]
@@ -133,29 +131,12 @@ fn run_builtin(
                 clipboard_changed: false,
             }))
         }
-        Builtin::Shorten => run_shorten(clip, config),
         Builtin::Split => run_split(clip, config, prompt),
         Builtin::Truncate => run_truncate(clip, config, prompt),
         Builtin::Resize => run_resize(clip, config, prompt),
         Builtin::Replace => run_replace(clip, config, prompt),
         Builtin::Convert => run_convert(clip, config, prompt),
     }
-}
-
-fn run_shorten(clip: &Clip, config: &Config) -> Result<Option<Outcome>, RunError> {
-    let url = clip.url().ok_or_else(|| RunError::WrongKind {
-        label: "Shorten".to_string(),
-    })?;
-
-    let available = config.active_shorteners();
-    let chosen = shorten::pick(&available).ok_or(shorten::ShortenError::NoneConfigured)?;
-    let short = shorten::shorten(url, chosen, config.ignore_ssl_errors)?;
-
-    clipboard::write_text(short.as_str())?;
-    Ok(Some(Outcome {
-        message: format!("Shortened via {}: {short}", chosen.name),
-        clipboard_changed: true,
-    }))
 }
 
 fn run_split(
@@ -512,7 +493,6 @@ fn run_command(
 mod tests {
     use super::*;
     use crate::action::ActionSpec;
-    use crate::content::ContentKind;
     use std::path::PathBuf;
 
     /// Answers every prompt the same way, so a test can state its intent.
@@ -743,19 +723,6 @@ mod tests {
         let clip = Clip::from_text("some text").expect("non-empty");
         let outcome = run(&action, &clip, &Config::default(), &cancels()).expect("cancel is fine");
         assert_eq!(outcome, None);
-    }
-
-    #[test]
-    fn shortening_without_a_configured_backend_says_so() {
-        let action = builtin_action(Builtin::Shorten, &["url"]);
-        let clip = Clip::from_text("https://example.com/x").expect("non-empty");
-        assert!(clip.kinds().contains(&ContentKind::Url));
-
-        let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("none configured");
-        assert!(
-            err.to_string().contains("no shortener is configured"),
-            "{err}"
-        );
     }
 
     #[test]

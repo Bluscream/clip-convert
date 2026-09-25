@@ -1,18 +1,17 @@
 //! clip-convert: a tray app that acts on whatever is in the clipboard.
 //!
-//! Two things happen in the background. Copied URLs are shortened automatically
-//! (toggleable from the tray), and a global hotkey opens a menu of actions for
-//! the current clipboard content. Which actions exist, what they are called and
-//! what they do is entirely config-driven; see `config.toml`.
+//! A global hotkey opens a menu of actions for whatever is on the clipboard.
+//! Which actions exist, what they are called and what they do is entirely
+//! config-driven; see `config.toml`.
 //!
 //! This process holds no graphical toolkit. Dialogs are drawn by
 //! `clip-convert-dialog`, which is started when one is needed and exits when it
 //! closes — so nothing is on screen, and nothing is held on the graphics driver,
 //! while the app sits in the tray.
 //!
-//! Everything else is event-driven too: the clipboard is watched through a
-//! change subscription where the platform offers one, and the keyboard through
-//! blocking reads. With nothing happening, the process is not scheduled at all.
+//! Everything is event-driven: the keyboard is read through blocking reads,
+//! and the clipboard only when the hotkey is pressed. With nothing happening,
+//! the process is not scheduled at all.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
@@ -25,7 +24,6 @@ mod tray;
 
 use anyhow::{Context, Result};
 use app::App;
-use clipconv::clipboard;
 use command::{Command, Commands};
 use hotkey::Modifiers;
 use prompt::Prompter;
@@ -62,7 +60,7 @@ fn main() -> Result<()> {
     let config_path = clipconv::config::config_path();
     log::info!("configuration: {}", config_path.display());
 
-    let app = Arc::new(App::load(config_path, Arc::clone(&modifiers))?);
+    let app = Arc::new(App::load(config_path)?);
     let prompter = Prompter::new(Arc::clone(&app) as Arc<dyn prompt::Store>)?;
 
     let (commands_tx, commands_rx) = mpsc::channel();
@@ -70,13 +68,10 @@ fn main() -> Result<()> {
 
     match tray::start(Arc::clone(&app), commands_tx.clone()) {
         Ok(backend) => log::info!("tray: {backend}"),
-        // Degraded, not fatal: the hotkey and auto-shortening still work.
+        // Degraded, not fatal: the hotkey still works.
         Err(e) => log::warn!("continuing without a tray icon: {e:#}"),
     }
 
-    // Kept in scope: dropping it at the end of main kills the watcher child.
-    // Owned by the consuming thread, its destructor would never run.
-    let _watcher = start_clipboard_watch(Arc::clone(&app));
     start_hotkey(&app, &modifiers, prompter.clone());
 
     log::info!("ready");
@@ -106,11 +101,8 @@ fn serve(app: &Arc<App>, prompter: &Prompter, commands: &mpsc::Receiver<Command>
     }
 }
 
-/// Quits cleanly on SIGINT and SIGTERM.
-///
-/// Without this the process dies before the clipboard watcher's destructor runs,
-/// which on Wayland leaves its helper orphaned and still connected to the
-/// compositor.
+/// Quits cleanly on SIGINT and SIGTERM, so the tray is withdrawn and any
+/// helper process started for a dialog is not left behind.
 #[cfg(unix)]
 fn install_signal_handler(commands: Commands) -> Result<()> {
     let mut signals = signal_hook::iterator::Signals::new([
@@ -131,29 +123,6 @@ fn install_signal_handler(commands: Commands) -> Result<()> {
 #[cfg(not(unix))]
 fn install_signal_handler(_commands: Commands) -> Result<()> {
     Ok(())
-}
-
-/// Watches the clipboard and runs the auto-shorten pipeline.
-///
-/// Returns the watcher, which the caller must keep alive.
-fn start_clipboard_watch(app: Arc<App>) -> Option<clipboard::Watcher> {
-    let (watcher, changes) = match clipboard::Watcher::start() {
-        Ok(started) => started,
-        Err(e) => {
-            log::error!("clipboard watching is unavailable: {e}");
-            return None;
-        }
-    };
-    log::debug!("clipboard backend: {}", watcher.backend());
-
-    std::thread::spawn(move || {
-        while changes.recv().is_ok() {
-            app.on_clipboard_change();
-        }
-        log::debug!("clipboard watcher stopped");
-    });
-
-    Some(watcher)
 }
 
 /// Listens for the configured hotkey and runs the action pipeline.

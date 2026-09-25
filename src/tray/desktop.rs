@@ -12,32 +12,23 @@ use crate::app::App;
 use crate::command::{Command, Commands};
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
 pub fn start(app: Arc<App>, commands: Commands) -> Result<String> {
     let menu = Menu::new();
 
-    let auto = CheckMenuItem::new("Auto-shorten copied links", true, app.auto_shorten(), None);
     let edit = MenuItem::new("Edit configuration…", true, None);
     let reload = MenuItem::new("Reload configuration", true, None);
     let quit = MenuItem::new("Quit", true, None);
 
-    menu.append(&auto).context("building the tray menu")?;
-    menu.append(&PredefinedMenuItem::separator())
-        .context("building the tray menu")?;
     menu.append(&edit).context("building the tray menu")?;
     menu.append(&reload).context("building the tray menu")?;
     menu.append(&PredefinedMenuItem::separator())
         .context("building the tray menu")?;
     menu.append(&quit).context("building the tray menu")?;
 
-    let (auto_id, edit_id, reload_id, quit_id) = (
-        auto.id().clone(),
-        edit.id().clone(),
-        reload.id().clone(),
-        quit.id().clone(),
-    );
+    let (edit_id, reload_id, quit_id) = (edit.id().clone(), reload.id().clone(), quit.id().clone());
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -51,11 +42,7 @@ pub fn start(app: Arc<App>, commands: Commands) -> Result<String> {
         let receiver = MenuEvent::receiver();
 
         while let Ok(event) = receiver.recv() {
-            if event.id == auto_id {
-                let now_on = !app.auto_shorten();
-                app.set_auto_shorten(now_on);
-                auto.set_checked(now_on);
-            } else if event.id == edit_id {
+            if event.id == edit_id {
                 open_config(app.config_path());
             } else if event.id == reload_id {
                 let _ = commands.send(Command::Reload);

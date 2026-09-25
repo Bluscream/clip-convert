@@ -11,8 +11,8 @@ use std::time::Duration;
 
 /// Builds an agent that can actually speak HTTPS.
 ///
-/// `ignore_ssl` makes it accept invalid certificates, which exists for a
-/// self-hosted shortener with a self-signed certificate and nothing else.
+/// `ignore_ssl` makes it accept invalid certificates, which exists for a host
+/// with a self-signed certificate and nothing else.
 #[must_use]
 pub fn agent(ignore_ssl: bool, timeout: Duration) -> ureq::Agent {
     let mut tls = native_tls::TlsConnector::builder();

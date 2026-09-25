@@ -114,36 +114,6 @@ impl Default for ReplaceSettings {
     }
 }
 
-/// How a shortener is talked to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShortenerKind {
-    /// A YOURLS instance driven through `yourls-api.php`.
-    Yourls,
-    /// Any program that reads a URL on stdin and prints the short URL.
-    Command,
-}
-
-/// One shortening backend. `Shorten` picks at random among the enabled ones.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Shortener {
-    pub name: String,
-    pub kind: ShortenerKind,
-    #[serde(default)]
-    pub api_url: String,
-    #[serde(default)]
-    pub signature: String,
-    /// Public prefix of links this instance serves. Used to avoid re-shortening
-    /// a link that is already short.
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub command: Vec<String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
 /// The whole configuration.
 // Each flag is an independent user-facing toggle with its own config key;
 // grouping them into sub-structs purely to satisfy the lint would change the
@@ -152,9 +122,6 @@ pub struct Shortener {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Shorten URLs automatically when they are copied. Toggled from the tray.
-    #[serde(default = "default_true")]
-    pub auto_shorten: bool,
     /// Remembered state of the action dialog's checkbox.
     #[serde(default = "default_true")]
     pub paste_after_action: bool,
@@ -163,20 +130,8 @@ pub struct Config {
     pub hotkey: String,
     #[serde(default = "default_true")]
     pub notifications: bool,
-    /// URLs matching this are never auto-shortened. Empty disables the check.
-    #[serde(default)]
-    pub blacklist_regex: String,
-    /// Hold Shift while copying to skip auto-shortening once.
-    #[serde(default = "default_true")]
-    pub bypass_shift: bool,
-    /// Skip auto-shortening entirely while Scroll Lock is on.
-    #[serde(default = "default_true")]
-    pub bypass_scroll_lock: bool,
-    /// Copying the same URL twice in a row leaves it alone.
-    #[serde(default = "default_true")]
-    pub bypass_double_copy: bool,
-    /// Accept invalid TLS certificates when talking to a shortener. Only for a
-    /// self-hosted instance with a self-signed certificate.
+    /// Accept invalid TLS certificates when fetching an icon. Only for a
+    /// host with a self-signed certificate.
     #[serde(default)]
     pub ignore_ssl_errors: bool,
     /// Per-key delay for typing, in ms. Higher is slower but more reliable in
@@ -197,8 +152,6 @@ pub struct Config {
     pub video: crate::video::VideoSettings,
     #[serde(default)]
     pub commands: Commands,
-    #[serde(default)]
-    pub shorteners: Vec<Shortener>,
     #[serde(default = "presets::factory")]
     pub presets: Vec<Preset>,
     /// What the `convert` built-in can turn things into.
@@ -229,14 +182,9 @@ const fn default_focus_delay() -> u64 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            auto_shorten: true,
             paste_after_action: true,
             hotkey: default_hotkey(),
             notifications: true,
-            blacklist_regex: String::new(),
-            bypass_shift: true,
-            bypass_scroll_lock: true,
-            bypass_double_copy: true,
             ignore_ssl_errors: false,
             type_delay_ms: default_type_delay(),
             focus_restore_delay_ms: default_focus_delay(),
@@ -245,7 +193,6 @@ impl Default for Config {
             replace: ReplaceSettings::default(),
             video: crate::video::VideoSettings::default(),
             commands: Commands::default(),
-            shorteners: Vec::new(),
             presets: presets::factory(),
             conversions: crate::convert::factory(),
             actions: factory_actions(),
@@ -277,7 +224,6 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         // Offered for every kind: with an image on the clipboard it reports that
         // there is nothing to type rather than being silently absent.
         builtin("type", "Type", &["any"], Builtin::Type),
-        builtin("shorten", "Shorten", &["url"], Builtin::Shorten),
         builtin("split", "Split", &["text", "url"], Builtin::Split),
         builtin("truncate", "Truncate", &["text", "url"], Builtin::Truncate),
         builtin(
@@ -321,8 +267,6 @@ pub enum ConfigError {
     Encode(#[from] toml::ser::Error),
     #[error("invalid action: {0}")]
     Action(#[from] crate::action::ActionError),
-    #[error("`blacklist_regex` is not a valid regular expression: {0}")]
-    BadRegex(#[from] regex::Error),
     #[error("{field} must be greater than zero")]
     NotPositive { field: &'static str },
     #[error("duplicate conversion id `{id}`")]
@@ -337,12 +281,6 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
-    #[error("shortener `{name}` is `{kind}` but is missing `{field}`")]
-    IncompleteShortener {
-        name: String,
-        kind: &'static str,
-        field: &'static str,
-    },
 }
 
 impl Config {
@@ -355,7 +293,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns the first problem found, phrased to name the offending field,
-    /// action, preset or shortener.
+    /// action, preset or conversion.
     pub fn validate(&self) -> Result<Vec<Action>, ConfigError> {
         if self.split.default_limit == 0 {
             return Err(ConfigError::NotPositive {
@@ -367,10 +305,6 @@ impl Config {
                 field: "truncate.default_limit",
             });
         }
-        if !self.blacklist_regex.trim().is_empty() {
-            regex::Regex::new(&self.blacklist_regex)?;
-        }
-
         let mut seen = BTreeSet::new();
         for preset in &self.presets {
             if !seen.insert(&preset.id) {
@@ -406,25 +340,6 @@ impl Config {
             }
         }
 
-        for shortener in self.shorteners.iter().filter(|s| s.enabled) {
-            let missing = match shortener.kind {
-                ShortenerKind::Yourls if shortener.api_url.trim().is_empty() => Some("api_url"),
-                ShortenerKind::Yourls if shortener.signature.trim().is_empty() => Some("signature"),
-                ShortenerKind::Command if shortener.command.is_empty() => Some("command"),
-                _ => None,
-            };
-            if let Some(field) = missing {
-                return Err(ConfigError::IncompleteShortener {
-                    name: shortener.name.clone(),
-                    kind: match shortener.kind {
-                        ShortenerKind::Yourls => "yourls",
-                        ShortenerKind::Command => "command",
-                    },
-                    field,
-                });
-            }
-        }
-
         Ok(crate::action::validate_all(&self.actions)?)
     }
 
@@ -455,12 +370,6 @@ impl Config {
             changed |= resolve_icon(&mut action.icon, "action", &action.id, ignore_ssl);
         }
         changed
-    }
-
-    /// The shorteners `Shorten` and auto-shorten are allowed to pick from.
-    #[must_use]
-    pub fn active_shorteners(&self) -> Vec<&Shortener> {
-        self.shorteners.iter().filter(|s| s.enabled).collect()
     }
 }
 
@@ -589,12 +498,41 @@ mod tests {
     }
 
     #[test]
-    fn factory_actions_cover_every_content_kind() {
-        let actions = Config::default().validate().expect("valid");
-        for kind in ContentKind::all() {
+    fn every_kind_of_clipboard_has_something_to_offer() {
+        use crate::content::{Clip, Facet};
+        use std::path::PathBuf;
+
+        // Real clips rather than synthetic sets of kinds: a URL is text as
+        // well as a URL, and a file selection carries its paths as text, so a
+        // set holding one kind alone describes nothing that can be copied.
+        let clips = [
+            ("text", Clip::from_text("some words")),
+            ("url", Clip::from_text("https://example.com/a")),
+            (
+                "image",
+                Clip::from_image("image/png".to_string(), vec![1, 2, 3]),
+            ),
+            (
+                "files",
+                Clip::from_files(vec![PathBuf::from("/a/notes.txt")]),
+            ),
+            (
+                "video",
+                Clip::from_files(vec![PathBuf::from("/a/clip.mp4")]),
+            ),
+            (
+                "html",
+                Clip::new(vec![Facet::Html("<b>hi</b>".to_string())]),
+            ),
+        ];
+
+        let config = Config::default();
+        let actions = config.validate().expect("valid");
+        for (name, clip) in clips {
+            let clip = clip.unwrap_or_else(|| panic!("{name} should be a clip"));
             assert!(
-                !crate::action::for_kinds(&actions, &BTreeSet::from([kind])).is_empty(),
-                "no action offered for {kind}"
+                !crate::action::for_clip(&actions, &clip, &config).is_empty(),
+                "nothing offered for {name}"
             );
         }
     }
@@ -615,10 +553,7 @@ mod tests {
         let clip = crate::content::Clip::from_text("https://example.com/a").expect("non-empty");
         // Convert is absent: nothing in the factory table turns a URL into
         // anything else.
-        assert_eq!(
-            menu_for(&clip),
-            ["type", "shorten", "split", "truncate", "replace"]
-        );
+        assert_eq!(menu_for(&clip), ["type", "split", "truncate", "replace"]);
     }
 
     #[test]
@@ -631,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn shorten_is_not_offered_for_plain_text() {
+    fn plain_text_gets_the_text_actions() {
         let clip = crate::content::Clip::from_text("some words").expect("non-empty");
         assert_eq!(menu_for(&clip), ["type", "split", "truncate", "replace"]);
     }
@@ -651,52 +586,6 @@ mod tests {
                 field: "split.default_limit"
             })
         ));
-    }
-
-    #[test]
-    fn an_invalid_blacklist_regex_is_reported() {
-        let config = Config {
-            blacklist_regex: "([".to_string(),
-            ..Config::default()
-        };
-        assert!(matches!(config.validate(), Err(ConfigError::BadRegex(_))));
-    }
-
-    #[test]
-    fn an_incomplete_shortener_is_reported_with_the_missing_field() {
-        let mut config = Config::default();
-        config.shorteners.push(Shortener {
-            name: "mine".to_string(),
-            kind: ShortenerKind::Yourls,
-            api_url: String::new(),
-            signature: "x".to_string(),
-            base_url: String::new(),
-            command: Vec::new(),
-            enabled: true,
-        });
-        match config.validate() {
-            Err(ConfigError::IncompleteShortener { field, name, .. }) => {
-                assert_eq!(field, "api_url");
-                assert_eq!(name, "mine");
-            }
-            other => panic!("expected IncompleteShortener, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_disabled_shortener_is_not_validated_or_offered() {
-        let mut config = Config::default();
-        config.shorteners.push(Shortener {
-            name: "broken".to_string(),
-            kind: ShortenerKind::Yourls,
-            api_url: String::new(),
-            signature: String::new(),
-            base_url: String::new(),
-            command: Vec::new(),
-            enabled: false,
-        });
-        assert!(config.validate().is_ok());
-        assert!(config.active_shorteners().is_empty());
     }
 
     #[test]
@@ -798,12 +687,10 @@ mod tests {
             button_color: None,
             text_color: None,
         });
-        config.auto_shorten = false;
         save_to(&path, &config).expect("save");
 
         let reloaded = load_from(&path).expect("reload");
         assert_eq!(reloaded, config);
-        assert!(!reloaded.auto_shorten);
 
         let actions = reloaded.validate().expect("custom action is valid");
         let image = crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Image]));

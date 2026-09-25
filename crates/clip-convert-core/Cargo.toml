@@ -32,7 +32,6 @@ url.workspace = true
 ureq = { version = "2.10", default-features = false, features = ["native-tls"] }
 native-tls = { version = "0.2", features = ["vendored"] }
 imagesize = "0.13"
-rand = "0.8"
 tempfile = "3"
 wait-timeout = "0.2"
 

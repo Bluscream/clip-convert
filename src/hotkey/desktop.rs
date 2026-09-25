@@ -6,7 +6,7 @@
 //! Unlike the evdev backend, the operating system reports only the registered
 //! chord, never individual key transitions. Live modifier state is therefore not
 //! available, so the "hold Shift to skip auto-shortening" rule cannot work here;
-//! [`Modifiers::shift_held`] always reports false and the rule is simply never
+//! The bypass rules that needed live modifier state are gone, so this is
 //! triggered rather than behaving unpredictably.
 
 use super::{Chord, KeyName, Modifier};
@@ -23,19 +23,7 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct Modifiers;
 
-impl Modifiers {
-    /// Always false here: see the module documentation.
-    #[must_use]
-    pub const fn shift_held(&self) -> bool {
-        false
-    }
-}
-
-/// Scroll Lock state is not read on these platforms, so the rule never fires.
-#[must_use]
-pub const fn scroll_lock_on() -> bool {
-    false
-}
+impl Modifiers {}
 
 /// Maps a platform-neutral key name onto a `KeyboardEvent` code.
 fn to_code(name: KeyName) -> Option<Code> {
@@ -202,7 +190,5 @@ mod tests {
     fn the_shift_bypass_is_inert_rather_than_wrong() {
         // Documented limitation: without key-state access the rule cannot work,
         // so it must report "not held" rather than guess.
-        assert!(!Modifiers::default().shift_held());
-        assert!(!scroll_lock_on());
     }
 }

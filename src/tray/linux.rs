@@ -26,43 +26,23 @@ impl ksni::Tray for Tray {
 
     fn icon_name(&self) -> String {
         // A themed name rather than a bundled pixmap: it follows the user's icon
-        // theme and stays sharp at any panel size. The state stays visible
-        // because the name changes with it.
-        if self.app.auto_shorten() {
-            "edit-link".to_string()
-        } else {
-            "edit-paste".to_string()
-        }
+        // theme and stays sharp at any panel size.
+        "edit-paste".to_string()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             title: "Clip Convert".to_string(),
-            description: if self.app.auto_shorten() {
-                "Auto-shorten is on".to_string()
-            } else {
-                "Auto-shorten is off".to_string()
-            },
+            description: format!("Press {} for clipboard actions", self.app.hotkey()),
             icon_name: self.icon_name(),
             icon_pixmap: Vec::new(),
         }
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+        use ksni::menu::{MenuItem, StandardItem};
 
         vec![
-            CheckmarkItem {
-                label: "Auto-shorten copied links".to_string(),
-                checked: self.app.auto_shorten(),
-                activate: Box::new(|tray: &mut Self| {
-                    let now_on = !tray.app.auto_shorten();
-                    tray.app.set_auto_shorten(now_on);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
             self.default_action_menu(),
             MenuItem::Separator,
             StandardItem {

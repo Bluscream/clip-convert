@@ -18,8 +18,6 @@ use std::collections::BTreeSet;
 pub enum Builtin {
     /// Emulate typing the text into the focused window.
     Type,
-    /// Replace a URL with a shortened one.
-    Shorten,
     /// Send the text in fixed-size pieces, one after another.
     Split,
     /// Shorten the text to fit a limit, marking the cut.
@@ -124,7 +122,6 @@ impl Builtin {
     pub fn consumes(self) -> Option<ContentKind> {
         match self {
             Self::Type | Self::Split | Self::Truncate | Self::Replace => Some(ContentKind::Text),
-            Self::Shorten => Some(ContentKind::Url),
             // Resize and Convert have no one subject: both work on images and
             // on video, and the label takes the most specific kind present.
             Self::Resize | Self::Convert => None,
@@ -362,10 +359,9 @@ pub fn for_kinds<'a>(actions: &'a [Action], available: &BTreeSet<ContentKind>) -
 /// The actions to offer for particular content, in config order.
 ///
 /// Beyond matching the content's kinds, a built-in is dropped when the app is
-/// not configured to do the thing it would do: `Convert` with no conversion
-/// that takes this format, `Shorten` with no shortener set up. Both would open
-/// a dialog or an error box to say so, and an entry that can only fail is worse
-/// than one that is absent.
+/// not configured to do the thing it would do — `Convert` with no conversion
+/// that takes this format. It would open a dialog only to say so, and an entry
+/// that can only fail is worse than one that is absent.
 #[must_use]
 pub fn for_clip<'a>(
     actions: &'a [Action],
@@ -382,7 +378,6 @@ pub fn for_clip<'a>(
             Run::Builtin(Builtin::Convert) => {
                 !crate::convert::applicable(&config.conversions, &sources).is_empty()
             }
-            Run::Builtin(Builtin::Shorten) => !config.active_shorteners().is_empty(),
             _ => true,
         })
         .collect()
@@ -444,7 +439,6 @@ mod tests {
             labels_for(&clip),
             [
                 "Type Text",
-                "Shorten URL",
                 "Split Text",
                 "Truncate Text",
                 "Replace in Text"
@@ -483,26 +477,6 @@ mod tests {
         // An image file has conversions, so there it belongs in the menu.
         let image = Clip::from_files(vec![PathBuf::from("/a/shot.png")]).expect("non-empty");
         assert!(ids(&for_clip(&actions, &image, &config)).contains(&"convert".to_string()));
-    }
-
-    #[test]
-    fn shorten_is_not_offered_without_a_shortener() {
-        let clip = Clip::from_text("https://example.com/a").expect("non-empty");
-        let actions = factory();
-        let mut config = crate::config::Config::default();
-        assert!(config.shorteners.is_empty(), "the factory sets none up");
-        assert!(!ids(&for_clip(&actions, &clip, &config)).contains(&"shorten".to_string()));
-
-        config.shorteners.push(crate::config::Shortener {
-            name: "mine".to_string(),
-            kind: crate::config::ShortenerKind::Command,
-            api_url: String::new(),
-            signature: String::new(),
-            base_url: String::new(),
-            command: vec!["true".to_string()],
-            enabled: true,
-        });
-        assert!(ids(&for_clip(&actions, &clip, &config)).contains(&"shorten".to_string()));
     }
 
     #[test]

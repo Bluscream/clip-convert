@@ -1,6 +1,6 @@
 //! Making sure only one copy of the app runs.
 //!
-//! Two instances would each watch the clipboard, each shorten the same URL, and
+//! Two instances would each listen for the hotkey, each open a menu, and
 //! each open a menu for every hotkey press.
 //!
 //! This uses `flock` on a file rather than a named socket or a PID file, for two

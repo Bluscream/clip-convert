@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-/// Live modifier state, shared with the clipboard pipeline.
+/// Live modifier state, built up as keys are seen.
 #[derive(Debug, Default)]
 pub struct Modifiers {
     ctrl: AtomicBool,
@@ -39,12 +39,6 @@ impl Modifiers {
         };
         flag.store(pressed, Ordering::Relaxed);
         true
-    }
-
-    /// Whether Shift is held right now.
-    #[must_use]
-    pub fn shift_held(&self) -> bool {
-        self.shift.load(Ordering::Relaxed)
     }
 
     fn matches(&self, required: &BTreeSet<Modifier>) -> bool {
@@ -218,23 +212,6 @@ fn is_keyboard(device: &Device) -> bool {
     })
 }
 
-/// Whether Scroll Lock is currently on, read from the keyboard LED state.
-#[must_use]
-pub fn scroll_lock_on() -> bool {
-    let Ok(entries) = std::fs::read_dir("/sys/class/leds") else {
-        return false;
-    };
-
-    entries.flatten().any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.contains("scrolllock"))
-            && std::fs::read_to_string(entry.path().join("brightness"))
-                .is_ok_and(|value| value.trim() != "0")
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,22 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_state_is_visible_for_the_bypass_rule() {
-        let modifiers = Modifiers::default();
-        assert!(!modifiers.shift_held());
-        modifiers.set(Key::KEY_RIGHTSHIFT, true);
-        assert!(modifiers.shift_held());
-        modifiers.set(Key::KEY_RIGHTSHIFT, false);
-        assert!(!modifiers.shift_held());
-    }
-
-    #[test]
     fn a_non_modifier_key_is_not_treated_as_one() {
         assert!(!Modifiers::default().set(Key::KEY_B, true));
-    }
-
-    #[test]
-    fn reading_scroll_lock_never_panics() {
-        let _ = scroll_lock_on();
     }
 }
