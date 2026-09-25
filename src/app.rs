@@ -222,7 +222,7 @@ impl App {
         let config = self.config();
         let actions = self.actions();
         let kinds = clip.kinds();
-        let offered = clipconv::action::for_kinds(&actions, &kinds);
+        let offered = clipconv::action::for_clip(&actions, &clip, &config);
         if offered.is_empty() {
             notify(
                 "No actions available",
@@ -330,8 +330,11 @@ impl App {
     }
 
     fn try_auto_shorten(&self) -> Result<()> {
-        let clip = match clipboard::read() {
-            Ok(clip) => clip,
+        // Text only. This runs on every clipboard change, and reading the whole
+        // clipboard would mean handling every image the user copies to answer a
+        // question about text.
+        let text = match clipboard::read_text() {
+            Ok(text) => text,
             Err(clipboard::ClipboardError::Empty) => return Ok(()),
             Err(e) => return Err(e.into()),
         };
@@ -339,6 +342,9 @@ impl App {
         // Only a clipboard that is purely a URL is auto-shortened. A copied
         // image that merely carries a source URL is not something the user
         // asked to have rewritten.
+        let Some(clip) = clipconv::content::Clip::from_text(&text) else {
+            return Ok(());
+        };
         let Some(url) = clip.url().cloned() else {
             return Ok(());
         };

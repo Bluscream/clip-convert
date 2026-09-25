@@ -350,9 +350,42 @@ pub fn validate_all(specs: &[ActionSpec]) -> Result<Vec<Action>, ActionError> {
 }
 
 /// The actions to offer for content of the given kinds, in config order.
+///
+/// Kind alone: this is what a config test or a tray menu needs. The menu the
+/// user actually sees comes from [`for_clip`], which also knows what the app is
+/// configured to be able to do.
 #[must_use]
 pub fn for_kinds<'a>(actions: &'a [Action], available: &BTreeSet<ContentKind>) -> Vec<&'a Action> {
     actions.iter().filter(|a| a.applies_to(available)).collect()
+}
+
+/// The actions to offer for particular content, in config order.
+///
+/// Beyond matching the content's kinds, a built-in is dropped when the app is
+/// not configured to do the thing it would do: `Convert` with no conversion
+/// that takes this format, `Shorten` with no shortener set up. Both would open
+/// a dialog or an error box to say so, and an entry that can only fail is worse
+/// than one that is absent.
+#[must_use]
+pub fn for_clip<'a>(
+    actions: &'a [Action],
+    clip: &crate::content::Clip,
+    config: &crate::config::Config,
+) -> Vec<&'a Action> {
+    let kinds = clip.kinds();
+    let sources = crate::convert::source_formats(clip);
+
+    actions
+        .iter()
+        .filter(|action| action.applies_to(&kinds))
+        .filter(|action| match action.run {
+            Run::Builtin(Builtin::Convert) => {
+                !crate::convert::applicable(&config.conversions, &sources).is_empty()
+            }
+            Run::Builtin(Builtin::Shorten) => !config.active_shorteners().is_empty(),
+            _ => true,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -425,6 +458,51 @@ mod tests {
         // "Type" is absent rather than offered and then failing: an image has
         // no text form for it to work on.
         assert_eq!(labels_for(&clip), ["Resize Image", "Convert Image"]);
+    }
+
+    fn ids(offered: &[&Action]) -> Vec<String> {
+        offered.iter().map(|a| a.id.clone()).collect()
+    }
+
+    #[test]
+    fn convert_is_not_offered_when_nothing_can_be_converted() {
+        // A video file: the factory table has no conversion that takes one, so
+        // offering Convert could only produce "nothing can be converted".
+        let clip = Clip::from_files(vec![PathBuf::from("/a/clip.mp4")]).expect("non-empty");
+        let config = crate::config::Config::default();
+        let actions = factory();
+
+        assert!(
+            !ids(&for_clip(&actions, &clip, &config)).contains(&"convert".to_string()),
+            "{:?}",
+            ids(&for_clip(&actions, &clip, &config))
+        );
+        // Resize still is: a video is exactly what it re-encodes.
+        assert!(ids(&for_clip(&actions, &clip, &config)).contains(&"resize".to_string()));
+
+        // An image file has conversions, so there it belongs in the menu.
+        let image = Clip::from_files(vec![PathBuf::from("/a/shot.png")]).expect("non-empty");
+        assert!(ids(&for_clip(&actions, &image, &config)).contains(&"convert".to_string()));
+    }
+
+    #[test]
+    fn shorten_is_not_offered_without_a_shortener() {
+        let clip = Clip::from_text("https://example.com/a").expect("non-empty");
+        let actions = factory();
+        let mut config = crate::config::Config::default();
+        assert!(config.shorteners.is_empty(), "the factory sets none up");
+        assert!(!ids(&for_clip(&actions, &clip, &config)).contains(&"shorten".to_string()));
+
+        config.shorteners.push(crate::config::Shortener {
+            name: "mine".to_string(),
+            kind: crate::config::ShortenerKind::Command,
+            api_url: String::new(),
+            signature: String::new(),
+            base_url: String::new(),
+            command: vec!["true".to_string()],
+            enabled: true,
+        });
+        assert!(ids(&for_clip(&actions, &clip, &config)).contains(&"shorten".to_string()));
     }
 
     #[test]

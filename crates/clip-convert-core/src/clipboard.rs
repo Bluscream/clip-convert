@@ -9,10 +9,13 @@
 //! Where no such event source exists the watcher falls back to polling, which is
 //! stated plainly rather than hidden: it is a fallback, not the design.
 //!
-//! `arboard` exchanges images as raw RGBA. Encoded PNG is kept as the internal
-//! representation instead, because that is what a user's custom command expects
-//! to receive on stdin and what the resize pipeline reads; conversion happens
-//! here, at the boundary.
+//! Images are kept as encoded bytes, because that is what a user's custom
+//! command expects on stdin and what the resize pipeline reads. Where the
+//! clipboard already offers an encoded form — which on Wayland it almost
+//! always does — those bytes are taken as they are. `arboard` exchanges images
+//! as raw RGBA, so going through it means decoding and re-encoding the whole
+//! picture for nothing: an 8K screenshot is 133 MB of RGBA and minutes of
+//! deflate. It is the fallback, not the path.
 
 use crate::content::{Clip, Facet};
 use std::sync::mpsc::{self, Receiver};
@@ -69,9 +72,15 @@ pub fn read() -> Result<Clip, ClipboardError> {
 
     let mut clipboard = open()?;
 
-    let mut clip = match clipboard.get_image() {
-        Ok(image) => encode_clipboard_image(&image)?,
-        Err(_) => None,
+    // The encoded form first: taking the bytes the clipboard already holds
+    // avoids decoding and re-encoding the image, which for a large screenshot
+    // costs more than everything else this app does put together.
+    let mut clip = match read_encoded_image() {
+        Some(clip) => Some(clip),
+        None => match clipboard.get_image() {
+            Ok(image) => encode_clipboard_image(&image)?,
+            Err(_) => None,
+        },
     };
 
     // Text is read whether or not an image was found: it may be a caption, a
@@ -169,6 +178,74 @@ fn read_mime(mime: &str) -> Option<String> {
     let mut body = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body).ok()?;
     (!body.trim().is_empty()).then_some(body)
+}
+
+/// Reads an image in whatever encoded form the clipboard already offers.
+///
+/// Returns `None` when no image type is on offer, or the platform cannot say
+/// what is on offer, in which case the caller falls back to `arboard`.
+#[cfg(target_os = "linux")]
+fn read_encoded_image() -> Option<Clip> {
+    let offered = offered_types();
+    let mime = crate::content::pick_image_mime(&offered)?;
+    let bytes = read_mime_bytes(&mime)?;
+
+    log::debug!(
+        "clipboard holds {} as {mime}, taken as it is",
+        crate::content::human_bytes(bytes.len())
+    );
+    Clip::from_image(mime, bytes)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_encoded_image() -> Option<Clip> {
+    // Windows and macOS hand out a device-independent bitmap rather than a
+    // file format, so there is nothing to take as it is.
+    None
+}
+
+/// What the clipboard is currently offering.
+#[cfg(target_os = "linux")]
+fn offered_types() -> Vec<String> {
+    use wl_clipboard_rs::paste::{get_mime_types, ClipboardType, Seat};
+
+    get_mime_types(ClipboardType::Regular, Seat::Unspecified)
+        .map(|types| types.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Reads one MIME type as raw bytes.
+#[cfg(target_os = "linux")]
+fn read_mime_bytes(mime: &str) -> Option<Vec<u8>> {
+    use wl_clipboard_rs::paste::{get_contents, ClipboardType, MimeType, Seat};
+
+    let (mut reader, _) = get_contents(
+        ClipboardType::Regular,
+        Seat::Unspecified,
+        MimeType::Specific(mime),
+    )
+    .ok()?;
+
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut body).ok()?;
+    (!body.is_empty()).then_some(body)
+}
+
+/// Reads only the clipboard's text, doing no work on anything else.
+///
+/// Auto-shortening looks at text and nothing else, and runs on every clipboard
+/// change. Reading the whole clipboard for it would decode and re-encode every
+/// image the user copies, for an answer that is always "not a URL".
+///
+/// # Errors
+///
+/// Returns [`ClipboardError::Empty`] when the clipboard holds no text.
+pub fn read_text() -> Result<String, ClipboardError> {
+    let text = open()?.get_text().unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err(ClipboardError::Empty);
+    }
+    Ok(text)
 }
 
 /// Turns the platform's raw RGBA into the PNG this app passes around.
