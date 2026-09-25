@@ -30,7 +30,7 @@ thiserror.workspace = true
 toml.workspace = true
 url.workspace = true
 ureq = { version = "2.10", default-features = false, features = ["native-tls"] }
-native-tls = "0.2"
+native-tls = { version = "0.2", features = ["vendored"] }
 imagesize = "0.13"
 rand = "0.8"
 tempfile = "3"

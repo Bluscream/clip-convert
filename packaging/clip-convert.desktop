@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Clip Convert
+GenericName=Clipboard actions
+Comment=Act on whatever is in the clipboard: resize, convert, replace, shorten, type
+Exec=clip-convert
+Icon=clip-convert
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;convert;resize;shorten;paste;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
