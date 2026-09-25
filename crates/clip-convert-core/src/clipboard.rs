@@ -30,6 +30,9 @@ const URI_LIST: &str = "text/uri-list";
 /// How long to wait for a clipboard write to start being served.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How often to check whether a write has become visible.
+const OFFER_POLL: Duration = Duration::from_millis(10);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
     #[error("the clipboard is empty")]
@@ -231,6 +234,21 @@ fn read_mime_bytes(mime: &str) -> Option<Vec<u8>> {
     (!body.is_empty()).then_some(body)
 }
 
+/// Waits until the clipboard reads back as `expected`.
+///
+/// Same reason as [`wait_until_offered`]: a write is served by a thread that
+/// never returns, so without this the next read sees the previous contents.
+fn wait_until_text(expected: &str) -> Result<(), ClipboardError> {
+    let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if open()?.get_text().is_ok_and(|text| text == expected) {
+            return Ok(());
+        }
+        std::thread::sleep(OFFER_POLL);
+    }
+    Err(ClipboardError::Unavailable)
+}
+
 /// Reads only the clipboard's text, doing no work on anything else.
 ///
 /// Auto-shortening looks at text and nothing else, and runs on every clipboard
@@ -295,7 +313,9 @@ fn image_error(error: &crate::encode::EncodeError) -> image::ImageError {
 pub fn write_text(text: &str) -> Result<(), ClipboardError> {
     let owned = text.to_string();
     let characters = text.chars().count();
+    let expected = owned.clone();
     serve(move |clipboard| set_text(clipboard, owned))?;
+    wait_until_text(&expected)?;
     log::debug!("wrote {characters} characters to the clipboard");
     Ok(())
 }
@@ -306,7 +326,29 @@ pub fn write_text(text: &str) -> Result<(), ClipboardError> {
 ///
 /// Returns [`ClipboardError::Image`] if the bytes are not a readable image, or
 /// a backend error if the clipboard could not be written.
-pub fn write_image(_mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
+pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
+    // The magic number only — enough to refuse publishing something that is
+    // not an image under an image type, without touching a single pixel.
+    image::guess_format(bytes).map_err(ClipboardError::Image)?;
+    write_image_bytes(mime, bytes)
+}
+
+/// Publishes an image in the form it is already in.
+///
+/// `arboard` exchanges images as raw RGBA, so going through it means decoding
+/// the picture and letting it re-encode — which for a large screenshot costs
+/// more than the action that produced it. Where the protocol can be addressed
+/// directly, the bytes go out untouched.
+#[cfg(target_os = "linux")]
+fn write_image_bytes(mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
+    let size = bytes.len();
+    serve_bytes(vec![(mime.to_string(), bytes.to_vec())], "image")?;
+    log::debug!("wrote {} of {mime} to the clipboard", crate::content::human_bytes(size));
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_image_bytes(_mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
     let rgba = image::load_from_memory(bytes)
         .map_err(ClipboardError::Image)?
         .to_rgba8();
@@ -383,16 +425,11 @@ fn set_text(clipboard: &mut arboard::Clipboard, text: String) -> Result<(), arbo
     clipboard.set_text(text)
 }
 
-/// Publishes an image, keeping ownership for as long as the platform requires.
-#[cfg(target_os = "linux")]
-fn set_image(
-    clipboard: &mut arboard::Clipboard,
-    image: arboard::ImageData<'static>,
-) -> Result<(), arboard::Error> {
-    use arboard::SetExtLinux;
-    clipboard.set().wait().image(image)
-}
-
+/// Publishes an image.
+///
+/// Only used off Linux: there, the encoded bytes go straight to the protocol
+/// rather than through `arboard`, which would take raw pixels and re-encode
+/// them.
 #[cfg(not(target_os = "linux"))]
 fn set_image(
     clipboard: &mut arboard::Clipboard,
@@ -425,12 +462,34 @@ pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
         .join("\n");
 
     let count = paths.len();
+    serve_bytes(
+        vec![
+            (URI_LIST.to_string(), uris.into_bytes()),
+            ("text/plain".to_string(), plain.into_bytes()),
+        ],
+        "file selection",
+    )?;
+
+    log::debug!("wrote {count} file(s) to the clipboard");
+    Ok(())
+}
+
+/// Publishes raw bytes under one or more MIME types, and waits until the
+/// clipboard really offers the first of them.
+///
+/// The wait is the point. Serving happens on a thread that does not return
+/// until ownership is lost, so there is no call to await — and without the
+/// wait, a read (or a paste) issued immediately afterwards sees whatever was
+/// on the clipboard before.
+#[cfg(target_os = "linux")]
+fn serve_bytes(sources: Vec<(String, Vec<u8>)>, what: &'static str) -> Result<(), ClipboardError> {
+    let Some(first) = sources.first().map(|(mime, _)| mime.clone()) else {
+        return Err(ClipboardError::Empty);
+    };
     let (ready_tx, ready_rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        use wl_clipboard_rs::copy::{
-            copy_multi, MimeSource, MimeType, Options, ServeRequests, Source,
-        };
+        use wl_clipboard_rs::copy::{copy_multi, MimeSource, MimeType, Options, ServeRequests, Source};
 
         let mut options = Options::new();
         options.serve_requests(ServeRequests::Unlimited);
@@ -444,30 +503,41 @@ pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
         // is lost, which may be much later.
         let _ = ready_tx.send(Ok(()));
 
-        let sources = vec![
-            MimeSource {
-                source: Source::Bytes(uris.into_bytes().into()),
-                mime_type: MimeType::Specific(URI_LIST.to_string()),
-            },
-            MimeSource {
-                source: Source::Bytes(plain.into_bytes().into()),
-                mime_type: MimeType::Specific("text/plain".to_string()),
-            },
-        ];
+        let sources = sources
+            .into_iter()
+            .map(|(mime, bytes)| MimeSource {
+                source: Source::Bytes(bytes.into()),
+                mime_type: MimeType::Specific(mime),
+            })
+            .collect();
 
         if let Err(e) = copy_multi(options, sources) {
-            log::warn!("serving the file selection ended: {e}");
+            log::warn!("serving the {what} ended: {e}");
         }
     });
 
     match ready_rx.recv_timeout(WRITE_TIMEOUT) {
-        Ok(Ok(())) => {
-            log::debug!("wrote {count} file(s) to the clipboard");
-            Ok(())
-        }
+        Ok(Ok(())) => wait_until_offered(&first),
         Ok(Err(e)) => Err(ClipboardError::Files(e)),
         Err(_) => Err(ClipboardError::Unavailable),
     }
+}
+
+/// Waits for the clipboard to advertise `mime`.
+///
+/// Polled rather than awaited because nothing in the protocol tells a client
+/// when its own offer has been registered. The interval is short and the whole
+/// wait is normally one or two of them.
+#[cfg(target_os = "linux")]
+fn wait_until_offered(mime: &str) -> Result<(), ClipboardError> {
+    let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if offered_types().iter().any(|offered| offered == mime) {
+            return Ok(());
+        }
+        std::thread::sleep(OFFER_POLL);
+    }
+    Err(ClipboardError::Unavailable)
 }
 
 #[cfg(not(target_os = "linux"))]
