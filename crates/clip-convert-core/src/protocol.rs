@@ -114,6 +114,13 @@ pub enum Request {
         message: String,
         default: usize,
     },
+    /// A pattern to search for and what to put in its place.
+    AskReplace {
+        /// Patterns used before, most recent first, offered for reuse.
+        patterns: Vec<String>,
+        /// Replacements used before, most recent first.
+        replacements: Vec<String>,
+    },
     /// Which size target to resize an image to.
     AskResizeTarget { presets: Vec<Preset> },
     /// A failure the user needs to see.
@@ -131,6 +138,7 @@ impl Request {
         match self {
             Self::ChooseAction { .. } => "actions",
             Self::AskLimit { .. } => "limit",
+            Self::AskReplace { .. } => "replace",
             Self::AskResizeTarget { .. } => "resize",
             Self::ShowError { .. } => "error",
         }
@@ -142,6 +150,7 @@ impl Request {
         match self {
             Self::ChooseAction { .. } => "Clipboard actions",
             Self::AskLimit { title, .. } => title,
+            Self::AskReplace { .. } => "Find and replace",
             Self::AskResizeTarget { .. } => "Resize image",
             Self::ShowError { .. } => "Something went wrong",
         }
@@ -174,6 +183,9 @@ pub enum Reply {
     },
     ResizeTarget {
         preset: Box<Preset>,
+    },
+    Replace {
+        replacement: crate::replace::Replacement,
     },
     /// The dialog was shown and acknowledged, with nothing to report.
     Acknowledged,
@@ -211,6 +223,10 @@ mod tests {
                 message: "How many?".to_string(),
                 default: 2000,
             },
+            Request::AskReplace {
+                patterns: vec![r"\d+".to_string()],
+                replacements: vec!["$1".to_string()],
+            },
             Request::AskResizeTarget {
                 presets: crate::presets::factory(),
             },
@@ -235,6 +251,12 @@ mod tests {
             Reply::Limit { value: 140 },
             Reply::ResizeTarget {
                 preset: Box::new(crate::presets::factory()[0].clone()),
+            },
+            Reply::Replace {
+                replacement: crate::replace::Replacement {
+                    pattern: r"(\w+), (\w+)".to_string(),
+                    replacement: "$2 $1".to_string(),
+                },
             },
             Reply::Acknowledged,
             Reply::Cancelled,
@@ -287,6 +309,11 @@ mod tests {
                 title: String::new(),
                 message: String::new(),
                 default: 1,
+            }
+            .size_key(),
+            Request::AskReplace {
+                patterns: Vec::new(),
+                replacements: Vec::new(),
             }
             .size_key(),
             Request::AskResizeTarget {

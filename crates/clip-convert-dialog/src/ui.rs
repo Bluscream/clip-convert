@@ -52,7 +52,15 @@ pub enum State {
     ChooseAction { paste_after: bool },
     AskLimit { value: String },
     AskResizeTarget { custom: Option<CustomSize> },
+    AskReplace { fields: ReplaceFields },
     ShowError,
+}
+
+/// The fields of the find-and-replace form.
+#[derive(Default)]
+pub struct ReplaceFields {
+    pub pattern: String,
+    pub replacement: String,
 }
 
 impl State {
@@ -67,6 +75,17 @@ impl State {
                 value: default.to_string(),
             },
             Request::AskResizeTarget { .. } => Self::AskResizeTarget { custom: None },
+            // Pre-filled with the last pattern used: repeating the previous
+            // replacement on a new piece of text is the common case.
+            Request::AskReplace {
+                patterns,
+                replacements,
+            } => Self::AskReplace {
+                fields: ReplaceFields {
+                    pattern: patterns.first().cloned().unwrap_or_default(),
+                    replacement: replacements.first().cloned().unwrap_or_default(),
+                },
+            },
             Request::ShowError { .. } => Self::ShowError,
         }
     }
@@ -112,6 +131,7 @@ pub fn window_height(request: &Request) -> f32 {
             rows.mul_add(BUTTON_HEIGHT + BUTTON_GAP, 150.0)
         }
         Request::AskLimit { .. } => 200.0,
+        Request::AskReplace { .. } => 260.0,
         Request::AskResizeTarget { presets } => {
             // Two per row, plus a row for the custom-size button.
             let rows = presets.len().div_ceil(PRESET_COLUMNS) + 1;
@@ -316,6 +336,13 @@ pub fn show(
                 (Request::AskResizeTarget { presets }, State::AskResizeTarget { custom }) => {
                     ask_resize_target(ui, presets, custom, icons)
                 }
+                (
+                    Request::AskReplace {
+                        patterns,
+                        replacements,
+                    },
+                    State::AskReplace { fields },
+                ) => ask_replace(ui, patterns, replacements, fields),
                 (Request::ShowError { message }, State::ShowError) => show_error(ui, message),
                 // The state is always built from the request, so this cannot
                 // happen; dismissing is the safe answer if it ever did.
@@ -595,6 +622,91 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
     reply
 }
 
+/// Width of the "Recent" picker beside a history field.
+const PICKER_WIDTH: f32 = 96.0;
+
+/// A text field with the values used before offered beside it.
+///
+/// A plain dropdown cannot take a new value and a plain field cannot offer an
+/// old one, so this is both: type anything, or pick something typed before.
+/// The picker is disabled rather than hidden when there is no history, so the
+/// field does not change width the first time the action is used.
+fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &[String]) {
+    ui.horizontal(|ui| {
+        let field_width =
+            (ui.available_width() - PICKER_WIDTH - ui.spacing().item_spacing.x).max(PICKER_WIDTH);
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .desired_width(field_width)
+                .font(egui::TextStyle::Monospace),
+        );
+        ui.add_enabled_ui(!history.is_empty(), |ui| {
+            egui::ComboBox::from_id_salt(id)
+                .width(PICKER_WIDTH)
+                .selected_text("Recent")
+                .show_ui(ui, |ui| {
+                    for past in history {
+                        if ui.selectable_label(past == value, past).clicked() {
+                            value.clone_from(past);
+                        }
+                    }
+                });
+        });
+    });
+}
+
+fn ask_replace(
+    ui: &mut egui::Ui,
+    patterns: &[String],
+    replacements: &[String],
+    fields: &mut ReplaceFields,
+) -> Option<Reply> {
+    heading(ui, "Replace every match of:");
+    history_field(ui, "patterns", &mut fields.pattern, patterns);
+
+    let problem = clipconv::replace::why_invalid(&fields.pattern);
+    // Only complained about once something has been typed: an empty field on
+    // opening is not a mistake yet.
+    if let Some(problem) = problem.as_deref().filter(|_| !fields.pattern.is_empty()) {
+        ui.colored_label(ui.visuals().error_fg_color, problem);
+    }
+
+    ui.add_space(12.0);
+    ui.label(
+        egui::RichText::new("with, where $1 is the first group:")
+            .size(15.0)
+            .strong(),
+    );
+    ui.add_space(6.0);
+    history_field(ui, "replacements", &mut fields.replacement, replacements);
+    ui.add_space(16.0);
+
+    let mut reply = None;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                problem.is_none(),
+                egui::Button::new("Replace").min_size([130.0, 36.0].into()),
+            )
+            .clicked()
+        {
+            reply = Some(Reply::Replace {
+                replacement: clipconv::replace::Replacement {
+                    pattern: fields.pattern.clone(),
+                    replacement: fields.replacement.clone(),
+                },
+            });
+        }
+        if ui
+            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
+            .clicked()
+        {
+            reply = Some(Reply::Cancelled);
+        }
+    });
+    reply
+}
+
 fn show_error(ui: &mut egui::Ui, message: &str) -> Option<Reply> {
     ui.label(egui::RichText::new(message).size(14.0));
     ui.add_space(18.0);
@@ -662,6 +774,10 @@ mod tests {
             Request::AskResizeTarget {
                 presets: Vec::new(),
             },
+            Request::AskReplace {
+                patterns: Vec::new(),
+                replacements: Vec::new(),
+            },
             Request::ShowError {
                 message: String::new(),
             },
@@ -677,6 +793,7 @@ mod tests {
                         Request::AskResizeTarget { .. },
                         State::AskResizeTarget { .. }
                     )
+                    | (Request::AskReplace { .. }, State::AskReplace { .. })
                     | (Request::ShowError { .. }, State::ShowError)
             );
             assert!(paired, "{request:?} did not pair with its state");
@@ -708,6 +825,33 @@ mod tests {
                 State::ChooseAction { paste_after } => assert_eq!(paste_after, remembered),
                 _ => panic!("wrong state"),
             }
+        }
+    }
+
+    #[test]
+    fn the_replace_form_starts_from_the_most_recent_history_entry() {
+        let state = State::for_request(&Request::AskReplace {
+            patterns: vec!["newest".to_string(), "older".to_string()],
+            replacements: vec!["$1".to_string()],
+        });
+        match state {
+            State::AskReplace { fields } => {
+                assert_eq!(fields.pattern, "newest");
+                assert_eq!(fields.replacement, "$1");
+            }
+            _ => panic!("wrong state"),
+        }
+    }
+
+    #[test]
+    fn an_empty_replace_history_leaves_the_form_blank() {
+        let state = State::for_request(&Request::AskReplace {
+            patterns: Vec::new(),
+            replacements: Vec::new(),
+        });
+        match state {
+            State::AskReplace { fields } => assert!(fields.pattern.is_empty()),
+            _ => panic!("wrong state"),
         }
     }
 

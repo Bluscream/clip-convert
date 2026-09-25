@@ -26,6 +26,8 @@ pub enum Builtin {
     Truncate,
     /// Re-encode an image to fit dimension and file-size limits.
     Resize,
+    /// Substitute every regular-expression match in the text.
+    Replace,
 }
 
 /// How clipboard content reaches an external command.
@@ -115,7 +117,7 @@ impl Builtin {
     #[must_use]
     pub fn consumes(self) -> ContentKind {
         match self {
-            Self::Type | Self::Split | Self::Truncate => ContentKind::Text,
+            Self::Type | Self::Split | Self::Truncate | Self::Replace => ContentKind::Text,
             Self::Shorten => ContentKind::Url,
             Self::Resize => ContentKind::Image,
         }
@@ -369,7 +371,12 @@ mod tests {
         let clip = Clip::from_text("some words").expect("non-empty");
         assert_eq!(
             labels_for(&clip),
-            ["Type Text", "Split Text", "Truncate Text"]
+            [
+                "Type Text",
+                "Split Text",
+                "Truncate Text",
+                "Replace in Text"
+            ]
         );
     }
 
@@ -378,7 +385,13 @@ mod tests {
         let clip = Clip::from_text("https://example.com/a").expect("non-empty");
         assert_eq!(
             labels_for(&clip),
-            ["Type Text", "Shorten URL", "Split Text", "Truncate Text"]
+            [
+                "Type Text",
+                "Shorten URL",
+                "Split Text",
+                "Truncate Text",
+                "Replace in Text"
+            ]
         );
     }
 

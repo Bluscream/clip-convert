@@ -18,6 +18,7 @@ pub mod icons;
 pub mod image;
 pub mod presets;
 pub mod protocol;
+pub mod replace;
 pub mod runner;
 pub mod scratch;
 pub mod shorten;

@@ -380,7 +380,7 @@ impl App {
     }
 }
 
-impl crate::prompt::SizeStore for App {
+impl crate::prompt::Store for App {
     fn size(&self, key: &str) -> Option<clipconv::protocol::WindowSize> {
         self.config().window_sizes.get(key).copied()
     }
@@ -388,6 +388,18 @@ impl crate::prompt::SizeStore for App {
     fn set_size(&self, key: &str, size: clipconv::protocol::WindowSize) {
         self.update(|config| {
             config.window_sizes.insert(key.to_string(), size);
+        });
+    }
+
+    fn remember_replace(&self, replacement: &clipconv::replace::Replacement) {
+        self.update(|config| {
+            let limit = config.replace.history_limit;
+            clipconv::replace::remember(&mut config.replace.patterns, &replacement.pattern, limit);
+            clipconv::replace::remember(
+                &mut config.replace.replacements,
+                &replacement.replacement,
+                limit,
+            );
         });
     }
 }

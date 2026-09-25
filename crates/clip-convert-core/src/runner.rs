@@ -25,6 +25,12 @@ pub trait Prompt {
     fn ask_limit(&self, title: &str, message: &str, default: usize) -> Option<usize>;
     /// Asks which size target to resize to.
     fn ask_resize_target(&self, presets: &[Preset]) -> Option<Preset>;
+    /// Asks for a pattern and its replacement, offering what was used before.
+    fn ask_replace(
+        &self,
+        patterns: &[String],
+        replacements: &[String],
+    ) -> Option<crate::replace::Replacement>;
 }
 
 /// What an action did, once it succeeded.
@@ -57,6 +63,12 @@ pub enum RunError {
     Typing(#[from] typing::TypingError),
     #[error("could not create a temporary file: {0}")]
     TempFile(#[source] std::io::Error),
+    #[error("`{pattern}` is not a valid regular expression: {source}")]
+    BadPattern {
+        pattern: String,
+        #[source]
+        source: regex::Error,
+    },
     #[error("none of the {total} files could be processed. {first}")]
     BatchFailed { total: usize, first: String },
 }
@@ -112,6 +124,7 @@ fn run_builtin(
         Builtin::Split => run_split(clip, config, prompt),
         Builtin::Truncate => run_truncate(clip, config, prompt),
         Builtin::Resize => run_resize(clip, config, prompt),
+        Builtin::Replace => run_replace(clip, config, prompt),
     }
 }
 
@@ -188,6 +201,48 @@ fn run_truncate(
 
     Ok(Some(Outcome {
         message: format!("Truncated to {} characters.", shortened.chars().count()),
+        clipboard_changed: true,
+    }))
+}
+
+fn run_replace(
+    clip: &Clip,
+    config: &Config,
+    prompt: &dyn Prompt,
+) -> Result<Option<Outcome>, RunError> {
+    let body = clip.text().ok_or(RunError::NotTextual)?;
+    let Some(replacement) =
+        prompt.ask_replace(&config.replace.patterns, &config.replace.replacements)
+    else {
+        return Ok(None);
+    };
+
+    let result =
+        crate::replace::apply(body, &replacement).map_err(|source| RunError::BadPattern {
+            pattern: replacement.pattern.clone(),
+            source,
+        })?;
+
+    // A pattern that matched nothing still ends here rather than in an error:
+    // the text is simply unchanged, and saying so is more useful than a
+    // failure dialog.
+    if result.matches == 0 {
+        return Ok(Some(Outcome {
+            message: format!(
+                "Nothing matched `{}`; the clipboard is unchanged.",
+                replacement.pattern
+            ),
+            clipboard_changed: false,
+        }));
+    }
+
+    clipboard::write_text(&result.text)?;
+    Ok(Some(Outcome {
+        message: format!(
+            "Replaced {} match{}.",
+            result.matches,
+            if result.matches == 1 { "" } else { "es" }
+        ),
         clipboard_changed: true,
     }))
 }
@@ -425,6 +480,7 @@ mod tests {
     struct Canned {
         limit: Option<usize>,
         target: Option<Preset>,
+        replacement: Option<crate::replace::Replacement>,
     }
 
     impl Prompt for Canned {
@@ -434,12 +490,16 @@ mod tests {
         fn ask_resize_target(&self, _: &[Preset]) -> Option<Preset> {
             self.target.clone()
         }
+        fn ask_replace(&self, _: &[String], _: &[String]) -> Option<crate::replace::Replacement> {
+            self.replacement.clone()
+        }
     }
 
     fn cancels() -> Canned {
         Canned {
             limit: None,
             target: None,
+            replacement: None,
         }
     }
 
@@ -482,6 +542,19 @@ mod tests {
         Canned {
             limit: None,
             target: Some(preset),
+            replacement: None,
+        }
+    }
+
+    /// Answers the replace prompt with a fixed pattern.
+    fn with_replacement(pattern: &str, with: &str) -> Canned {
+        Canned {
+            limit: None,
+            target: None,
+            replacement: Some(crate::replace::Replacement {
+                pattern: pattern.to_string(),
+                replacement: with.to_string(),
+            }),
         }
     }
 
@@ -730,5 +803,55 @@ mod tests {
             outcome.message.len()
         );
         assert!(outcome.message.ends_with("..."));
+    }
+
+    #[test]
+    fn replace_that_matches_nothing_leaves_the_clipboard_alone() {
+        let clip = Clip::from_text("nothing to see").expect("non-empty");
+        let outcome = run(
+            &builtin_action(Builtin::Replace, &["text"]),
+            &clip,
+            &Config::default(),
+            &with_replacement("zzz+", "x"),
+        )
+        .expect("runs")
+        .expect("an outcome");
+
+        assert!(!outcome.clipboard_changed, "{}", outcome.message);
+        assert!(
+            outcome.message.contains("Nothing matched"),
+            "{}",
+            outcome.message
+        );
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_compile_is_reported_with_the_pattern() {
+        let clip = Clip::from_text("anything").expect("non-empty");
+        let err = run(
+            &builtin_action(Builtin::Replace, &["text"]),
+            &clip,
+            &Config::default(),
+            &with_replacement("([", "x"),
+        )
+        .expect_err("a broken pattern must be an error");
+
+        match err {
+            RunError::BadPattern { pattern, .. } => assert_eq!(pattern, "(["),
+            other => panic!("expected BadPattern, got {other}"),
+        }
+    }
+
+    #[test]
+    fn a_cancelled_replace_does_nothing_at_all() {
+        let clip = Clip::from_text("a-b").expect("non-empty");
+        let outcome = run(
+            &builtin_action(Builtin::Replace, &["text"]),
+            &clip,
+            &Config::default(),
+            &cancels(),
+        )
+        .expect("cancelling is not a failure");
+        assert_eq!(outcome, None);
     }
 }

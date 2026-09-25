@@ -84,6 +84,36 @@ impl Default for TruncateSettings {
     }
 }
 
+/// Defaults and remembered history for the `replace` built-in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceSettings {
+    /// How many past patterns and replacements to offer. Zero remembers none.
+    #[serde(default = "default_history")]
+    pub history_limit: usize,
+    /// Patterns used before, most recent first. Written by the app, but
+    /// perfectly reasonable to seed by hand with the ones worth keeping.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Replacements used before, most recent first.
+    #[serde(default)]
+    pub replacements: Vec<String>,
+}
+
+const fn default_history() -> usize {
+    10
+}
+
+impl Default for ReplaceSettings {
+    fn default() -> Self {
+        Self {
+            history_limit: default_history(),
+            patterns: Vec::new(),
+            replacements: Vec::new(),
+        }
+    }
+}
+
 /// How a shortener is talked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +192,8 @@ pub struct Config {
     #[serde(default)]
     pub truncate: TruncateSettings,
     #[serde(default)]
+    pub replace: ReplaceSettings,
+    #[serde(default)]
     pub commands: Commands,
     #[serde(default)]
     pub shorteners: Vec<Shortener>,
@@ -205,6 +237,7 @@ impl Default for Config {
             focus_restore_delay_ms: default_focus_delay(),
             split: SplitSettings::default(),
             truncate: TruncateSettings::default(),
+            replace: ReplaceSettings::default(),
             commands: Commands::default(),
             shorteners: Vec::new(),
             presets: presets::factory(),
@@ -238,6 +271,12 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         builtin("shorten", "Shorten", &["url"], Builtin::Shorten),
         builtin("split", "Split", &["text", "url"], Builtin::Split),
         builtin("truncate", "Truncate", &["text", "url"], Builtin::Truncate),
+        builtin(
+            "replace",
+            "Replace in",
+            &["text", "url", "html"],
+            Builtin::Replace,
+        ),
         builtin("resize", "Resize", &["image"], Builtin::Resize),
     ]
 }
@@ -523,7 +562,7 @@ mod tests {
                 .iter()
                 .map(|a| a.id.as_str())
                 .collect();
-        assert_eq!(ids, ["type", "shorten", "split", "truncate"]);
+        assert_eq!(ids, ["type", "shorten", "split", "truncate", "replace"]);
     }
 
     #[test]
@@ -545,7 +584,7 @@ mod tests {
                 .iter()
                 .map(|a| a.id.as_str())
                 .collect();
-        assert_eq!(ids, ["type", "split", "truncate"]);
+        assert_eq!(ids, ["type", "split", "truncate", "replace"]);
     }
 
     #[test]

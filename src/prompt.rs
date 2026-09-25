@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use clipconv::exec;
 use clipconv::presets::Preset;
 use clipconv::protocol::{ActionChoice, ActionEntry, Answer, Ask, Reply, Request, WindowSize};
+use clipconv::replace::Replacement;
 use clipconv::runner::Prompt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,15 +30,18 @@ const HELPER: &str = if cfg!(target_os = "windows") {
     "clip-convert-dialog"
 };
 
-/// Remembers how big each dialog was left.
+/// What the dialogs remember between runs.
 ///
 /// A trait rather than a direct dependency on the application, so the dialog
 /// plumbing can be tested without a config file on disk.
-pub trait SizeStore: Send + Sync {
+pub trait Store: Send + Sync {
     /// The size this dialog was last left at.
     fn size(&self, key: &str) -> Option<WindowSize>;
     /// Records the size a dialog was closed at.
     fn set_size(&self, key: &str, size: WindowSize);
+    /// Records a pattern and replacement that were just used, so they can be
+    /// picked from a list next time instead of retyped.
+    fn remember_replace(&self, replacement: &Replacement);
 }
 
 /// Runs dialogs in a separate process.
@@ -46,7 +50,7 @@ pub struct Prompter {
     /// The program and arguments to run. A vector rather than a bare path so a
     /// test can point it at a stand-in without writing an executable to disk.
     command: Vec<String>,
-    sizes: Arc<dyn SizeStore>,
+    sizes: Arc<dyn Store>,
 }
 
 impl Prompter {
@@ -56,7 +60,7 @@ impl Prompter {
     ///
     /// Returns an error if it is not installed beside this executable, which is
     /// worth failing loudly for: without it the hotkey can do nothing.
-    pub fn new(sizes: Arc<dyn SizeStore>) -> Result<Self> {
+    pub fn new(sizes: Arc<dyn Store>) -> Result<Self> {
         let mut path = std::env::current_exe().context("locating this executable")?;
         path.pop();
         let helper = path.join(HELPER);
@@ -173,6 +177,21 @@ impl Prompt for Prompter {
             _ => None,
         }
     }
+
+    fn ask_replace(&self, patterns: &[String], replacements: &[String]) -> Option<Replacement> {
+        match self.ask(&Request::AskReplace {
+            patterns: patterns.to_vec(),
+            replacements: replacements.to_vec(),
+        }) {
+            Reply::Replace { replacement } => {
+                // Recorded here rather than in the runner: what was used is
+                // worth keeping whether or not the pattern went on to match.
+                self.sizes.remember_replace(&replacement);
+                Some(replacement)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,9 +209,10 @@ mod tests {
     #[derive(Default)]
     struct Remembered {
         sizes: std::sync::Mutex<std::collections::BTreeMap<String, WindowSize>>,
+        replacements: std::sync::Mutex<Vec<Replacement>>,
     }
 
-    impl SizeStore for Remembered {
+    impl Store for Remembered {
         fn size(&self, key: &str) -> Option<WindowSize> {
             self.sizes.lock().ok()?.get(key).copied()
         }
@@ -201,13 +221,18 @@ mod tests {
                 sizes.insert(key.to_string(), size);
             }
         }
+        fn remember_replace(&self, replacement: &Replacement) {
+            if let Ok(mut used) = self.replacements.lock() {
+                used.push(replacement.clone());
+            }
+        }
     }
 
     fn stub(script: &str) -> Prompter {
         stub_with(script, Arc::new(Remembered::default()))
     }
 
-    fn stub_with(script: &str, sizes: Arc<dyn SizeStore>) -> Prompter {
+    fn stub_with(script: &str, sizes: Arc<dyn Store>) -> Prompter {
         Prompter {
             command: vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()],
             sizes,
@@ -288,7 +313,7 @@ mod tests {
     #[test]
     fn the_size_a_dialog_was_left_at_is_remembered_and_sent_back_next_time() {
         let sizes: Arc<Remembered> = Arc::new(Remembered::default());
-        let store: Arc<dyn SizeStore> = sizes.clone();
+        let store: Arc<dyn Store> = sizes.clone();
 
         // First run: the dialog reports the size it closed at.
         let prompter = stub_with(
@@ -343,6 +368,33 @@ mod tests {
                 height: 500
             })
         );
+    }
+
+    #[test]
+    fn a_used_pattern_is_recorded_for_next_time() {
+        let sizes: Arc<Remembered> = Arc::new(Remembered::default());
+        let prompter = stub_with(
+            r#"cat >/dev/null; echo '{"reply":{"reply":"replace","replacement":{"pattern":"a+","replacement":"b"}}}'"#,
+            sizes.clone(),
+        );
+        let answer = prompter.ask_replace(&[], &[]).expect("a replacement");
+        assert_eq!(answer.pattern, "a+");
+        assert_eq!(
+            sizes.replacements.lock().expect("lock").as_slice(),
+            &[answer],
+            "what was used should have been recorded"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_replace_records_nothing() {
+        let sizes: Arc<Remembered> = Arc::new(Remembered::default());
+        let prompter = stub_with(
+            r#"cat >/dev/null; echo '{"reply":{"reply":"cancelled"}}'"#,
+            sizes.clone(),
+        );
+        assert_eq!(prompter.ask_replace(&[], &[]), None);
+        assert!(sizes.replacements.lock().expect("lock").is_empty());
     }
 
     #[test]

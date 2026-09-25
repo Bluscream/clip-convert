@@ -46,7 +46,7 @@ fn main() -> Result<()> {
     log::info!("configuration: {}", config_path.display());
 
     let app = Arc::new(App::load(config_path, Arc::clone(&modifiers))?);
-    let prompter = Prompter::new(Arc::clone(&app) as Arc<dyn prompt::SizeStore>)?;
+    let prompter = Prompter::new(Arc::clone(&app) as Arc<dyn prompt::Store>)?;
 
     let (commands_tx, commands_rx) = mpsc::channel();
     install_signal_handler(commands_tx.clone())?;
