@@ -18,6 +18,41 @@ YOURLS support, but shares no code with it any more.
 
 ---
 
+## Installing
+
+**Linux — AppImage.** Download `clip-convert-<version>-x86_64.AppImage` from the
+[releases](https://github.com/Bluscream/clip-convert/releases), make it
+executable and run it. It is built against glibc 2.31, so it runs on anything
+from about 2020 onwards, and it carries almost nothing with it: OpenSSL is
+compiled in, and Wayland, X11, xkbcommon and OpenGL are all loaded from the
+system at runtime.
+
+```bash
+chmod +x clip-convert-*.AppImage
+./clip-convert-*.AppImage
+```
+
+With [Gear Lever](https://github.com/mijorus/gearlever) installed, opening the
+file with it instead installs it into `~/.local/bin`, adds the desktop entry
+and takes care of updates.
+
+To start it with the session:
+
+```bash
+systemctl --user enable --now clip-convert.service
+```
+
+The unit is in [`packaging/clip-convert.service`](packaging/clip-convert.service).
+Use *one* autostart mechanism — a systemd unit and a `~/.config/autostart`
+entry will both start it, and the second copy exits immediately because of the
+single-instance lock, which looks exactly like a failure to start.
+
+**Windows and macOS.** Binaries are built for both and attached to each
+release. They are compiled and nothing more: see
+[platform support](#platform-support).
+
+---
+
 ## The action menu
 
 Press the hotkey and the menu lists what applies to the current content:
@@ -36,7 +71,23 @@ Labels name what they will act on, pluralised by what is there: the same entry
 reads *Resize Image*, *Resize Images* or *Resize Videos*.
 
 The menu heading says what is on the clipboard — `3 files · images · 4.1 MB ·
-also as text`. A **Paste after action** checkbox is remembered between uses. It is applied only
+also as text`. A **Paste after action** checkbox is remembered between uses.
+
+Everything is reachable from the keyboard, because the hotkey that opened the
+menu was pressed by hands that are already on it:
+
+| Key | |
+| :--- | :--- |
+| `1`–`9` | Run that entry |
+| `↑` `↓` `Tab` | Move the selection |
+| `Enter` `Space` | Run the selected entry, or accept a form |
+| `Esc` | Dismiss |
+
+Only actions that can actually do something appear. An image gets *Resize* and
+*Convert*; it does not get *Type*, because there is no text to type, and an
+entry whose only outcome is an error box wastes the click the menu exists to
+save. The same rule hides *Convert* when nothing can convert the format in
+hand, and *Shorten* when no shortener is configured. It is applied only
 where it makes sense: an action that has already typed its result into the
 window is not pasted again.
 
@@ -280,6 +331,7 @@ Three crates:
 ---
 
 ## Platform support
+<a id="platform-support"></a>
 
 | | Linux | Windows | macOS |
 | :--- | :--- | :--- | :--- |

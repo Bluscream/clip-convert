@@ -1,0 +1,18 @@
+[Unit]
+Description=Clip Convert — clipboard actions in the tray
+Documentation=https://github.com/Bluscream/clip-convert
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# %h is the home directory. Point this at wherever the AppImage lives; Gear
+# Lever installs it as ~/.local/bin/clip-convert.
+ExecStart=%h/.local/bin/clip-convert
+Restart=on-failure
+RestartSec=5
+# The hotkey is read from evdev, which needs membership of the `input` group.
+# The app says so at startup if it cannot.
+
+[Install]
+WantedBy=graphical-session.target
