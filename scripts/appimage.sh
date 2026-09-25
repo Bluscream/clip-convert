@@ -14,6 +14,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_IMAGE="${LCC_BUILD_IMAGE:-docker.io/library/ubuntu:20.04}"
+# podman locally, docker on a CI runner: the two take the same arguments here.
+RUNTIME="${LCC_CONTAINER_RUNTIME:-podman}"
 OUT_DIR="${LCC_OUT_DIR:-$PROJECT_DIR/dist}"
 ARCH="${ARCH:-x86_64}"
 
@@ -32,6 +34,7 @@ Usage: appimage.sh [--skip-build]
 
 Environment:
   LCC_BUILD_IMAGE  Container image to build in (default: ubuntu:20.04)
+  LCC_CONTAINER_RUNTIME  podman (default) or docker
   LCC_OUT_DIR      Where to write the AppImage (default: ./dist)
   LCC_BIN_DIR      Where the binaries are (default: target/appimage/release)
 USAGE
@@ -55,7 +58,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     # against the host's glibc, and mixing them silently produces a binary that
     # only runs here.
     mkdir -p "$PROJECT_DIR/target/appimage" "$PROJECT_DIR/target/appimage-cargo"
-    podman run --rm \
+    "$RUNTIME" run --rm \
         -v "$PROJECT_DIR:/src:z" \
         -v "$PROJECT_DIR/target/appimage-cargo:/cargo:z" \
         -e CARGO_HOME=/cargo \
@@ -98,7 +101,9 @@ strip "$APPDIR/usr/bin/clip-convert" "$APPDIR/usr/bin/clip-convert-dialog" 2>/de
 
 install -m644 packaging/clip-convert.desktop "$APPDIR/usr/share/applications/"
 install -m644 packaging/clip-convert.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
-magick -background none packaging/clip-convert.svg -resize 256x256 \
+# ImageMagick 7 renamed the tool; both spellings are around.
+if command -v magick >/dev/null; then RASTERISE=(magick); else RASTERISE=(convert); fi
+"${RASTERISE[@]}" -background none packaging/clip-convert.svg -resize 256x256 \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps/clip-convert.png"
 
 # The three files appimagetool expects at the root of the AppDir.

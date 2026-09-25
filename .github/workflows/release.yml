@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to release
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-latest
+          - target: windows-x86_64
+            runner: windows-latest
+          - target: macos-aarch64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxkbcommon-dev imagemagick
+          curl -sSLo /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          # The runner has no FUSE, which appimagetool's own AppImage needs.
+          cd /tmp && ./appimagetool --appimage-extract >/dev/null
+          sudo ln -sf /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+
+      - name: Build the AppImage
+        if: matrix.target == 'linux-x86_64'
+        run: LCC_CONTAINER_RUNTIME=docker ./scripts/appimage.sh
+
+      - name: Build
+        if: matrix.target != 'linux-x86_64'
+        run: cargo build --workspace --release
+
+      - name: Collect the binaries
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          case "${{ matrix.target }}" in
+            linux-x86_64)
+              cp dist/*.AppImage artifacts/ ;;
+            windows-x86_64)
+              cd target/release && 7z a ../../artifacts/clip-convert-windows-x86_64.zip \
+                clip-convert.exe clip-convert-dialog.exe ;;
+            macos-aarch64)
+              cd target/release && tar czf ../../artifacts/clip-convert-macos-aarch64.tar.gz \
+                clip-convert clip-convert-dialog ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          find artifacts -type f -print
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            $(find artifacts -type f | tr '\n' ' ')

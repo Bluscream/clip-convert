@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Lint, test and document
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The dialog links xkbcommon through enigo; everything else it needs is
+      # opened at runtime.
+      - name: Install build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxkbcommon-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The clipboard end-to-end tests are excluded by default: they are
+      # #[ignore]d because they need a desktop session, which CI has not got.
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-latest
+          - target: windows-x86_64
+            runner: windows-latest
+          - target: macos-aarch64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxkbcommon-dev
+
+      # Linux ships as an AppImage, built in an old distribution so it runs on
+      # more than just the machine that built it.
+      - name: Build the AppImage
+        if: matrix.target == 'linux-x86_64'
+        run: |
+          sudo apt-get install -y -qq imagemagick
+          curl -sSLo /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+          # The runner has no FUSE, which appimagetool's own AppImage needs.
+          cd /tmp && /usr/local/bin/appimagetool --appimage-extract >/dev/null
+          sudo ln -sf /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+          cd "$GITHUB_WORKSPACE"
+          LCC_CONTAINER_RUNTIME=docker ./scripts/appimage.sh
+
+      - name: Build
+        if: matrix.target != 'linux-x86_64'
+        run: cargo build --workspace --release
+
+      - name: Collect the binaries
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          case "${{ matrix.target }}" in
+            linux-x86_64)
+              cp dist/*.AppImage artifacts/ ;;
+            windows-x86_64)
+              cp target/release/clip-convert.exe target/release/clip-convert-dialog.exe artifacts/ ;;
+            macos-aarch64)
+              cp target/release/clip-convert target/release/clip-convert-dialog artifacts/ ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
