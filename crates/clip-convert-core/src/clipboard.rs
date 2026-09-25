@@ -33,6 +33,36 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often to check whether a write has become visible.
 const OFFER_POLL: Duration = Duration::from_millis(10);
 
+/// How long to let a clipboard manager take over before releasing the lock.
+#[cfg(target_os = "linux")]
+const SETTLE: Duration = Duration::from_millis(150);
+
+/// How many times a write is attempted before giving up.
+#[cfg(target_os = "linux")]
+const WRITE_ATTEMPTS: u32 = 4;
+
+/// Up to this size, a write is confirmed by reading it back.
+#[cfg(target_os = "linux")]
+const VERIFY_BY_READING: usize = 1024 * 1024;
+
+/// Held for the duration of a clipboard write, so two never overlap.
+#[cfg(target_os = "linux")]
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Every type a paste might ask text for.
+///
+/// The first is what a Wayland client uses; the rest are what an X11 client
+/// asks for through `XWayland`, and a selection that offers only the modern name
+/// pastes as nothing in older programs.
+#[cfg(target_os = "linux")]
+const TEXT_TYPES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
     #[error("the clipboard is empty")]
@@ -234,19 +264,29 @@ fn read_mime_bytes(mime: &str) -> Option<Vec<u8>> {
     (!body.is_empty()).then_some(body)
 }
 
-/// Waits until the clipboard reads back as `expected`.
+/// Publishes text through the protocol, under every type a paste may ask for.
 ///
-/// Same reason as [`wait_until_offered`]: a write is served by a thread that
-/// never returns, so without this the next read sees the previous contents.
-fn wait_until_text(expected: &str) -> Result<(), ClipboardError> {
-    let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
-    while std::time::Instant::now() < deadline {
-        if open()?.get_text().is_ok_and(|text| text == expected) {
-            return Ok(());
-        }
-        std::thread::sleep(OFFER_POLL);
-    }
-    Err(ClipboardError::Unavailable)
+/// `arboard` can do this, but reading the clipboard to confirm the write had
+/// landed made its serving thread fail outright — the request to hand over the
+/// data arrived while the same process was asking for it, and KDE replaced the
+/// selection with its `x-kde-onlyReplaceEmpty` placeholder. Serving it the same
+/// way as images and files avoids the question, and the confirmation is then a
+/// cheap look at the offered types rather than a read.
+#[cfg(target_os = "linux")]
+fn write_text_bytes(text: String) -> Result<(), ClipboardError> {
+    let bytes = text.into_bytes();
+    let sources: Vec<(String, Vec<u8>)> = TEXT_TYPES
+        .iter()
+        .map(|mime| ((*mime).to_string(), bytes.clone()))
+        .collect();
+    serve_bytes(&sources, "text")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_text_bytes(text: String) -> Result<(), ClipboardError> {
+    // Windows and macOS copy the data into a system-owned clipboard, so there
+    // is nothing to serve and nothing to wait for.
+    serve(move |clipboard| set_text(clipboard, text))
 }
 
 /// Reads only the clipboard's text, doing no work on anything else.
@@ -313,9 +353,7 @@ fn image_error(error: &crate::encode::EncodeError) -> image::ImageError {
 pub fn write_text(text: &str) -> Result<(), ClipboardError> {
     let owned = text.to_string();
     let characters = text.chars().count();
-    let expected = owned.clone();
-    serve(move |clipboard| set_text(clipboard, owned))?;
-    wait_until_text(&expected)?;
+    write_text_bytes(owned)?;
     log::debug!("wrote {characters} characters to the clipboard");
     Ok(())
 }
@@ -342,8 +380,11 @@ pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
 #[cfg(target_os = "linux")]
 fn write_image_bytes(mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
     let size = bytes.len();
-    serve_bytes(vec![(mime.to_string(), bytes.to_vec())], "image")?;
-    log::debug!("wrote {} of {mime} to the clipboard", crate::content::human_bytes(size));
+    serve_bytes(&[(mime.to_string(), bytes.to_vec())], "image")?;
+    log::debug!(
+        "wrote {} of {mime} to the clipboard",
+        crate::content::human_bytes(size)
+    );
     Ok(())
 }
 
@@ -381,6 +422,7 @@ fn write_image_bytes(_mime: &str, bytes: &[u8]) -> Result<(), ClipboardError> {
 /// selection until another application takes ownership and then exits. At most
 /// one of these is alive at a time, because the next copy — by this app or any
 /// other — releases the previous one.
+#[cfg(not(target_os = "linux"))]
 fn serve(
     write: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error> + Send + 'static,
 ) -> Result<(), ClipboardError> {
@@ -411,13 +453,10 @@ fn serve(
     }
 }
 
-/// Publishes text, keeping ownership for as long as the platform requires.
-#[cfg(target_os = "linux")]
-fn set_text(clipboard: &mut arboard::Clipboard, text: String) -> Result<(), arboard::Error> {
-    use arboard::SetExtLinux;
-    clipboard.set().wait().text(text)
-}
-
+/// Publishes text.
+///
+/// Only used off Linux: there it goes through the protocol directly, under
+/// every type a paste might ask for.
 #[cfg(not(target_os = "linux"))]
 fn set_text(clipboard: &mut arboard::Clipboard, text: String) -> Result<(), arboard::Error> {
     // Windows and macOS copy the data into a system-owned clipboard, so the
@@ -463,7 +502,7 @@ pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
 
     let count = paths.len();
     serve_bytes(
-        vec![
+        &[
             (URI_LIST.to_string(), uris.into_bytes()),
             ("text/plain".to_string(), plain.into_bytes()),
         ],
@@ -482,14 +521,51 @@ pub fn write_files(paths: &[std::path::PathBuf]) -> Result<(), ClipboardError> {
 /// wait, a read (or a paste) issued immediately afterwards sees whatever was
 /// on the clipboard before.
 #[cfg(target_os = "linux")]
-fn serve_bytes(sources: Vec<(String, Vec<u8>)>, what: &'static str) -> Result<(), ClipboardError> {
-    let Some(first) = sources.first().map(|(mime, _)| mime.clone()) else {
+fn serve_bytes(sources: &[(String, Vec<u8>)], what: &'static str) -> Result<(), ClipboardError> {
+    // One write at a time. Each publishes from its own thread, which runs until
+    // the next one takes ownership away; two overlapping meant the outgoing
+    // thread's teardown could clear the selection the incoming one had just
+    // claimed, leaving the clipboard empty.
+    let _writing = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    for attempt in 1..=WRITE_ATTEMPTS {
+        match publish(sources.to_vec(), what) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt == WRITE_ATTEMPTS => return Err(e),
+            Err(_) => {
+                // Backing off rather than retrying immediately: the usual
+                // reason a write does not take is that the desktop's clipboard
+                // manager is mid-takeover of the previous one, and trying
+                // again inside that window fails the same way.
+                log::warn!("the {what} did not reach the clipboard; trying again");
+                std::thread::sleep(SETTLE * attempt);
+            }
+        }
+    }
+    Err(ClipboardError::Unavailable)
+}
+
+/// Publishes one set of offers and waits for it to become readable.
+#[cfg(target_os = "linux")]
+fn publish(sources: Vec<(String, Vec<u8>)>, what: &'static str) -> Result<(), ClipboardError> {
+    let Some((first, payload)) = sources
+        .first()
+        .map(|(mime, bytes)| (mime.clone(), bytes.len()))
+    else {
         return Err(ClipboardError::Empty);
     };
+    // Kept for the check after the write, where it is cheap to compare.
+    let expected = (payload <= VERIFY_BY_READING)
+        .then(|| sources.first().map(|(_, bytes)| bytes.clone()))
+        .flatten();
     let (ready_tx, ready_rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        use wl_clipboard_rs::copy::{copy_multi, MimeSource, MimeType, Options, ServeRequests, Source};
+        use wl_clipboard_rs::copy::{
+            copy_multi, MimeSource, MimeType, Options, ServeRequests, Source,
+        };
 
         let mut options = Options::new();
         options.serve_requests(ServeRequests::Unlimited);
@@ -517,22 +593,56 @@ fn serve_bytes(sources: Vec<(String, Vec<u8>)>, what: &'static str) -> Result<()
     });
 
     match ready_rx.recv_timeout(WRITE_TIMEOUT) {
-        Ok(Ok(())) => wait_until_offered(&first),
+        Ok(Ok(())) => {
+            wait_until_written(&first, payload)?;
+            // A clipboard manager takes the selection over a moment after it
+            // is published, copying the data for itself. The check that
+            // matters is the one after that has happened — before it, a write
+            // can look fine and still be lost.
+            std::thread::sleep(SETTLE);
+            confirm(&first, expected.as_deref())
+        }
         Ok(Err(e)) => Err(ClipboardError::Files(e)),
         Err(_) => Err(ClipboardError::Unavailable),
     }
 }
 
-/// Waits for the clipboard to advertise `mime`.
+/// Checks that the clipboard still holds what was written.
 ///
-/// Polled rather than awaited because nothing in the protocol tells a client
-/// when its own offer has been registered. The interval is short and the whole
-/// wait is normally one or two of them.
+/// Small content is compared byte for byte. Anything larger is confirmed by
+/// its type alone: reading a 30 MB screenshot back through a pipe to prove it
+/// is there costs more than the write did.
 #[cfg(target_os = "linux")]
-fn wait_until_offered(mime: &str) -> Result<(), ClipboardError> {
+fn confirm(mime: &str, expected: Option<&[u8]>) -> Result<(), ClipboardError> {
+    if !offered_types().iter().any(|offered| offered == mime) {
+        return Err(ClipboardError::Unavailable);
+    }
+    match expected {
+        None => Ok(()),
+        Some(expected) if read_mime_bytes(mime).is_some_and(|actual| actual == expected) => Ok(()),
+        Some(_) => Err(ClipboardError::Unavailable),
+    }
+}
+
+/// Waits until what was just written can actually be read back.
+///
+/// Polled rather than awaited: nothing in the protocol tells a client when its
+/// own offer has been registered, and until it has, a read — or a paste —
+/// returns whatever was on the clipboard before.
+///
+/// A small payload is confirmed by reading it, which proves the whole path
+/// works. A large one is confirmed by its type alone, because reading a 30 MB
+/// screenshot back through a pipe to prove it is there costs more than the
+/// write did.
+#[cfg(target_os = "linux")]
+fn wait_until_written(mime: &str, payload: usize) -> Result<(), ClipboardError> {
     let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
+    let verify_contents = payload <= VERIFY_BY_READING;
+
     while std::time::Instant::now() < deadline {
-        if offered_types().iter().any(|offered| offered == mime) {
+        if offered_types().iter().any(|offered| offered == mime)
+            && (!verify_contents || read_mime_bytes(mime).is_some())
+        {
             return Ok(());
         }
         std::thread::sleep(OFFER_POLL);

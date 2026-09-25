@@ -129,11 +129,18 @@ pub fn icon_button(
         let visuals = ui.style().interact(&response);
         let fill = color(style.button_color)
             .map_or(visuals.weak_bg_fill, |fill| interactive(fill, &response));
+        // The keyboard selection is drawn as the same outline focus uses, so
+        // there is one visual language for "this is where you are".
+        let stroke = if style.selected {
+            ui.visuals().selection.stroke
+        } else {
+            visuals.bg_stroke
+        };
         ui.painter().rect(
             rect.expand(visuals.expansion),
             visuals.rounding,
             fill,
-            visuals.bg_stroke,
+            stroke,
         );
 
         let group_width = icon_space + galley.size().x;
@@ -168,6 +175,8 @@ pub struct Style<'a> {
     pub icon: Option<&'a str>,
     pub button_color: Option<&'a String>,
     pub text_color: Option<&'a String>,
+    /// Whether the keyboard selection is on this entry.
+    pub selected: bool,
 }
 
 impl<'a> Style<'a> {
@@ -176,6 +185,7 @@ impl<'a> Style<'a> {
             icon: action.icon.as_deref(),
             button_color: action.button_color.as_ref(),
             text_color: action.text_color.as_ref(),
+            selected: false,
         }
     }
 
@@ -184,7 +194,14 @@ impl<'a> Style<'a> {
             icon: preset.icon.as_deref(),
             button_color: preset.button_color.as_ref(),
             text_color: preset.text_color.as_ref(),
+            selected: false,
         }
+    }
+
+    /// The same style, marked as the keyboard's current selection.
+    #[must_use]
+    pub fn selected(self, selected: bool) -> Self {
+        Self { selected, ..self }
     }
 }
 
@@ -399,4 +416,79 @@ pub fn close_button(ctx: &egui::Context) -> bool {
             response.on_hover_text("Close").clicked()
         })
         .inner
+}
+
+/// Moves a selection with the keyboard, and says when one was chosen.
+///
+/// These dialogs open under a hotkey: the hands that pressed it are already on
+/// the keyboard, and reaching for the mouse to pick from a list of four is the
+/// slow way round. Arrows or Tab move, Enter or Space chooses, and a digit
+/// picks that entry outright.
+///
+/// Returns the index that was activated, if any.
+pub fn navigate(ctx: &egui::Context, len: usize, selected: &mut usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    *selected = (*selected).min(len - 1);
+    let mut activated = None;
+
+    ctx.input(|input| {
+        let forward = input.key_pressed(egui::Key::ArrowDown)
+            || input.key_pressed(egui::Key::ArrowRight)
+            || (input.key_pressed(egui::Key::Tab) && !input.modifiers.shift);
+        let backward = input.key_pressed(egui::Key::ArrowUp)
+            || input.key_pressed(egui::Key::ArrowLeft)
+            || (input.key_pressed(egui::Key::Tab) && input.modifiers.shift);
+
+        if forward {
+            *selected = (*selected + 1) % len;
+        }
+        if backward {
+            *selected = (*selected + len - 1) % len;
+        }
+        if input.key_pressed(egui::Key::Home) {
+            *selected = 0;
+        }
+        if input.key_pressed(egui::Key::End) {
+            *selected = len - 1;
+        }
+        if input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space) {
+            activated = Some(*selected);
+        }
+
+        // A digit picks that entry directly, which is the fastest path of all
+        // for a menu someone uses every day.
+        for (offset, key) in DIGITS.iter().enumerate() {
+            if input.key_pressed(*key) && offset < len {
+                *selected = offset;
+                activated = Some(offset);
+            }
+        }
+    });
+
+    activated
+}
+
+/// The digit keys, in order, for picking an entry by number.
+const DIGITS: [egui::Key; 9] = [
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+    egui::Key::Num7,
+    egui::Key::Num8,
+    egui::Key::Num9,
+];
+
+/// Whether Enter was pressed this frame.
+///
+/// Used by the forms instead of a text field's `lost_focus`, which does not
+/// reliably report Enter and left these dialogs unsubmittable from the
+/// keyboard. Nothing in a dialog with no multi-line field wants Enter for
+/// anything else.
+pub fn accepted(ctx: &egui::Context) -> bool {
+    ctx.input(|input| input.key_pressed(egui::Key::Enter))
 }

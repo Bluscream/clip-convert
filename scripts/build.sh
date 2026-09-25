@@ -83,6 +83,9 @@ else
 fi
 
 echo "==> built $BINARY"
+# Every step above either succeeds or `set -e` has already stopped the script.
+# Piping this output into `grep` hides that: the pipeline's status is grep's,
+# so `./scripts/build.sh | grep ... && git commit` commits a failed build.
 ls -lh "$BINARY"
 
 if [[ $PROBE -eq 1 ]]; then

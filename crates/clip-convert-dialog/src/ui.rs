@@ -5,8 +5,9 @@
 //! of widgets that have to be built, bound and torn down.
 
 use crate::widgets::{
-    bottom_bar, close_button, color, dialog_buttons, dismiss_button, heading, history_field,
-    icon_button, wide_button, Choice, Icons, Style, BUTTON_HEIGHT, BUTTON_TEXT,
+    accepted, bottom_bar, close_button, color, dialog_buttons, dismiss_button, heading,
+    history_field, icon_button, navigate, wide_button, Choice, Icons, Style, BUTTON_HEIGHT,
+    BUTTON_TEXT,
 };
 use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
@@ -44,12 +45,26 @@ const MARGIN: f32 = 22.0;
 
 /// Mutable state a dialog collects while it is open.
 pub enum State {
-    ChooseAction { paste_after: bool },
-    AskLimit { value: String },
-    AskResizeTarget { custom: Option<CustomSize> },
-    AskReplace { fields: ReplaceFields },
-    AskConversion,
-    AskVideoTarget { fields: VideoFields },
+    ChooseAction {
+        paste_after: bool,
+        selected: usize,
+    },
+    AskLimit {
+        value: String,
+    },
+    AskResizeTarget {
+        custom: Option<CustomSize>,
+        selected: usize,
+    },
+    AskReplace {
+        fields: ReplaceFields,
+    },
+    AskConversion {
+        selected: usize,
+    },
+    AskVideoTarget {
+        fields: VideoFields,
+    },
     ShowError,
 }
 
@@ -107,12 +122,16 @@ impl State {
         match request {
             Request::ChooseAction { paste_after, .. } => Self::ChooseAction {
                 paste_after: *paste_after,
+                selected: 0,
             },
             Request::AskLimit { default, .. } => Self::AskLimit {
                 value: default.to_string(),
             },
-            Request::AskResizeTarget { .. } => Self::AskResizeTarget { custom: None },
-            Request::AskConversion { .. } => Self::AskConversion,
+            Request::AskResizeTarget { .. } => Self::AskResizeTarget {
+                custom: None,
+                selected: 0,
+            },
+            Request::AskConversion { .. } => Self::AskConversion { selected: 0 },
             Request::AskVideoTarget { .. } => Self::AskVideoTarget {
                 fields: VideoFields::default(),
             },
@@ -211,14 +230,18 @@ pub fn show(
                         actions,
                         ..
                     },
-                    State::ChooseAction { paste_after },
-                ) => choose_action(ui, description, actions, paste_after, icons),
+                    State::ChooseAction {
+                        paste_after,
+                        selected,
+                    },
+                ) => choose_action(ui, description, actions, paste_after, selected, icons),
                 (Request::AskLimit { message, .. }, State::AskLimit { value }) => {
                     ask_limit(ui, message, value)
                 }
-                (Request::AskResizeTarget { presets }, State::AskResizeTarget { custom }) => {
-                    ask_resize_target(ui, presets, custom, icons)
-                }
+                (
+                    Request::AskResizeTarget { presets },
+                    State::AskResizeTarget { custom, selected },
+                ) => ask_resize_target(ui, presets, custom, selected, icons),
                 (
                     Request::AskReplace {
                         patterns,
@@ -226,8 +249,8 @@ pub fn show(
                     },
                     State::AskReplace { fields },
                 ) => ask_replace(ui, patterns, replacements, fields),
-                (Request::AskConversion { source, options }, State::AskConversion) => {
-                    ask_conversion(ui, source, options, icons)
+                (Request::AskConversion { source, options }, State::AskConversion { selected }) => {
+                    ask_conversion(ui, source, options, selected, icons)
                 }
                 (Request::AskVideoTarget { subject }, State::AskVideoTarget { fields }) => {
                     ask_video_target(ui, subject, fields)
@@ -254,7 +277,12 @@ pub fn show(
 /// A `LayoutJob` rather than one string, because the two lines need different
 /// sizes and weights — the name is what is being chosen, the limits are there
 /// so choosing does not require remembering each platform's rules.
-fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui::Response {
+fn preset_button(
+    ui: &mut egui::Ui,
+    icons: &mut Icons,
+    preset: &Preset,
+    selected: bool,
+) -> egui::Response {
     let title =
         color(preset.text_color.as_ref()).unwrap_or_else(|| ui.visuals().strong_text_color());
     let mut text = egui::text::LayoutJob::default();
@@ -279,7 +307,13 @@ fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui:
         },
     );
 
-    icon_button(ui, icons, &preset.id, Style::for_preset(preset), text)
+    icon_button(
+        ui,
+        icons,
+        &preset.id,
+        Style::for_preset(preset).selected(selected),
+        text,
+    )
 }
 
 fn choose_action(
@@ -287,11 +321,14 @@ fn choose_action(
     description: &str,
     actions: &[ActionEntry],
     paste_after: &mut bool,
+    selected: &mut usize,
     icons: &mut Icons,
 ) -> Option<Reply> {
     heading(ui, description);
 
-    let mut chosen = None;
+    let mut chosen = navigate(ui.ctx(), actions.len(), selected)
+        .and_then(|index| actions.get(index))
+        .map(|action| action.id.clone());
     // The checkbox is anchored to the bottom so the list above it can take the
     // remaining space and scroll, rather than pushing it off the window.
     egui::TopBottomPanel::bottom("paste")
@@ -304,7 +341,7 @@ fn choose_action(
         });
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for action in actions {
+        for (index, action) in actions.iter().enumerate() {
             // Set on the text rather than left to the painter's fallback:
             // `strong()` gives the galley an explicit colour, which a fallback
             // can no longer override.
@@ -314,7 +351,8 @@ fn choose_action(
             if let Some(chosen) = color(action.text_color.as_ref()) {
                 text = text.color(chosen);
             }
-            if icon_button(ui, icons, &action.id, Style::for_action(action), text).clicked() {
+            let style = Style::for_action(action).selected(index == *selected);
+            if icon_button(ui, icons, &action.id, style, text).clicked() {
                 chosen = Some(action.id.clone());
             }
             ui.add_space(BUTTON_GAP);
@@ -357,7 +395,7 @@ fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Rep
         );
     }
 
-    let submitted = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let submitted = accepted(ui.ctx());
     match (choice, parsed) {
         (Some(Choice::Accept), Some(value)) => Some(Reply::Limit { value }),
         (Some(Choice::Cancel), _) => Some(Reply::Cancelled),
@@ -370,6 +408,7 @@ fn ask_resize_target(
     ui: &mut egui::Ui,
     presets: &[Preset],
     custom: &mut Option<CustomSize>,
+    selected: &mut usize,
     icons: &mut Icons,
 ) -> Option<Reply> {
     if let Some(fields) = custom.as_mut() {
@@ -383,16 +422,20 @@ fn ask_resize_target(
     // for, so resizing makes the list fit rather than leaving empty space.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     // A window is never wide enough for this to leave the range.
-    let columns =
+    let column_count =
         ((ui.available_width() / PRESET_COLUMN_WIDTH) as usize).clamp(1, PRESET_COLUMNS_MAX);
 
-    let mut chosen = None;
+    let mut chosen = navigate(ui.ctx(), presets.len(), selected)
+        .and_then(|index| presets.get(index))
+        .cloned();
     let mut open_custom = false;
+
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for row in presets.chunks(columns) {
-            ui.columns(columns, |columns| {
-                for (column, preset) in columns.iter_mut().zip(row) {
-                    if preset_button(column, icons, preset).clicked() {
+        for (row_index, row) in presets.chunks(column_count).enumerate() {
+            ui.columns(column_count, |columns| {
+                for (offset, (column, preset)) in columns.iter_mut().zip(row).enumerate() {
+                    let index = row_index * column_count + offset;
+                    if preset_button(column, icons, preset, index == *selected).clicked() {
                         chosen = Some(preset.clone());
                     }
                 }
@@ -456,7 +499,7 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
         );
     }
 
-    match choice {
+    match choice.or_else(|| (ready && accepted(ui.ctx())).then_some(Choice::Accept)) {
         Some(Choice::Accept) => match (width, height, max_kb) {
             (Some(width), Some(height), Some(max_kb)) => Some(Reply::ResizeTarget {
                 preset: Box::new(Preset {
@@ -523,7 +566,7 @@ fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) 
         }
     }
 
-    match choice {
+    match choice.or_else(|| (ready && accepted(ui.ctx())).then_some(Choice::Accept)) {
         Some(Choice::Accept) => target.map(|target| Reply::VideoTarget { target }),
         Some(Choice::Cancel) => Some(Reply::Cancelled),
         None => None,
@@ -534,20 +577,25 @@ fn ask_conversion(
     ui: &mut egui::Ui,
     source: &str,
     options: &[ActionEntry],
+    selected: &mut usize,
     icons: &mut Icons,
 ) -> Option<Reply> {
     heading(ui, &format!("Convert {source} to:"));
 
-    let mut chosen = None;
+    let mut chosen = navigate(ui.ctx(), options.len(), selected)
+        .and_then(|index| options.get(index))
+        .map(|option| option.id.clone());
+
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for option in options {
+        for (index, option) in options.iter().enumerate() {
             let mut text = egui::RichText::new(&option.label)
                 .size(BUTTON_TEXT)
                 .strong();
             if let Some(colour) = color(option.text_color.as_ref()) {
                 text = text.color(colour);
             }
-            if icon_button(ui, icons, &option.id, Style::for_action(option), text).clicked() {
+            let style = Style::for_action(option).selected(index == *selected);
+            if icon_button(ui, icons, &option.id, style, text).clicked() {
                 chosen = Some(option.id.clone());
             }
             ui.add_space(BUTTON_GAP);
@@ -586,15 +634,16 @@ fn ask_replace(
     ui.add_space(6.0);
     history_field(ui, "replacements", &mut fields.replacement, replacements);
 
-    match choice {
-        Some(Choice::Accept) => Some(Reply::Replace {
+    match choice.or_else(|| accepted(ui.ctx()).then_some(Choice::Accept)) {
+        Some(Choice::Accept) if problem.is_none() => Some(Reply::Replace {
             replacement: clipconv::replace::Replacement {
                 pattern: fields.pattern.clone(),
                 replacement: fields.replacement.clone(),
             },
         }),
         Some(Choice::Cancel) => Some(Reply::Cancelled),
-        None => None,
+        // Accept with a pattern that will not compile is not an answer.
+        Some(Choice::Accept) | None => None,
     }
 }
 
@@ -690,7 +739,7 @@ mod tests {
                         State::AskResizeTarget { .. }
                     )
                     | (Request::AskReplace { .. }, State::AskReplace { .. })
-                    | (Request::AskConversion { .. }, State::AskConversion)
+                    | (Request::AskConversion { .. }, State::AskConversion { .. })
                     | (Request::AskVideoTarget { .. }, State::AskVideoTarget { .. })
                     | (Request::ShowError { .. }, State::ShowError)
             );
@@ -720,9 +769,22 @@ mod tests {
                 paste_after: remembered,
             });
             match state {
-                State::ChooseAction { paste_after } => assert_eq!(paste_after, remembered),
+                State::ChooseAction { paste_after, .. } => assert_eq!(paste_after, remembered),
                 _ => panic!("wrong state"),
             }
+        }
+    }
+
+    #[test]
+    fn a_list_dialog_starts_with_the_first_entry_selected() {
+        let state = State::for_request(&Request::ChooseAction {
+            description: String::new(),
+            actions: actions(3),
+            paste_after: false,
+        });
+        match state {
+            State::ChooseAction { selected, .. } => assert_eq!(selected, 0),
+            _ => panic!("wrong state"),
         }
     }
 
