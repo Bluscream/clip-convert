@@ -42,6 +42,21 @@ pub struct Commands {
     /// Presses the paste chord, used by "Paste after action".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_paste: Option<Vec<String>>,
+    /// Presses the paste chord for a terminal, which is a different one.
+    ///
+    /// Ctrl+V in a terminal is readline's `quoted-insert`: it takes the next
+    /// input literally, so the terminal's own bracketed-paste markers end up
+    /// in the line as visible `^[[200~` text instead of being interpreted.
+    /// Terminals paste with Ctrl+Shift+V instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_paste_terminal: Option<Vec<String>>,
+    /// Prints the focused window's class, used to recognise a terminal.
+    ///
+    /// Left unset, `kdotool` and then `xdotool` are tried, which covers KDE
+    /// Wayland and X11. When nothing can report a window class the ordinary
+    /// paste chord is used, which is what happened before any of this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_class: Option<Vec<String>>,
 }
 
 /// Defaults for the `split` built-in.
@@ -152,6 +167,10 @@ pub struct Config {
     pub video: crate::video::VideoSettings,
     #[serde(default)]
     pub commands: Commands,
+    /// Window classes that are terminals, matched case-insensitively as a
+    /// substring — `org.kde.konsole` is matched by `konsole`.
+    #[serde(default = "default_terminal_classes")]
+    pub terminal_classes: Vec<String>,
     #[serde(default = "presets::factory")]
     pub presets: Vec<Preset>,
     /// What the `convert` built-in can turn things into.
@@ -169,6 +188,39 @@ pub struct Config {
 
 fn default_hotkey() -> String {
     "ctrl+b".to_string()
+}
+
+/// Window classes treated as terminals.
+///
+/// Substrings, matched case-insensitively, so `konsole` covers both `konsole`
+/// and `org.kde.konsole`. Anything not listed pastes the ordinary way; adding
+/// to this list is a config change, not a code change.
+fn default_terminal_classes() -> Vec<String> {
+    [
+        "konsole",
+        "gnome-terminal",
+        "xfce4-terminal",
+        "terminator",
+        "tilix",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "foot",
+        "ghostty",
+        "contour",
+        "rio",
+        "xterm",
+        "urxvt",
+        "st-256color",
+        "termite",
+        "blackbox",
+        "ptyxis",
+        "org.gnome.console",
+        "terminal",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
 }
 
 const fn default_type_delay() -> u32 {
@@ -193,6 +245,7 @@ impl Default for Config {
             replace: ReplaceSettings::default(),
             video: crate::video::VideoSettings::default(),
             commands: Commands::default(),
+            terminal_classes: default_terminal_classes(),
             presets: presets::factory(),
             conversions: crate::convert::factory(),
             actions: factory_actions(),

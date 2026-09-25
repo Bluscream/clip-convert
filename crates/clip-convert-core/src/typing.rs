@@ -86,12 +86,79 @@ pub fn press_enter(commands: &Commands) -> Result<(), TypingError> {
 /// # Errors
 ///
 /// Returns an error if the keys could not be sent.
-pub fn press_paste(commands: &Commands) -> Result<(), TypingError> {
+pub fn press_paste(commands: &Commands, terminal_classes: &[String]) -> Result<(), TypingError> {
+    // A terminal needs a different chord. Ctrl+V there is readline's
+    // quoted-insert, which takes the next input literally — so the terminal's
+    // own bracketed-paste markers land in the line as `^[[200~` text with the
+    // pasted URL between them, instead of being interpreted as a paste.
+    let terminal =
+        focused_class(commands).is_some_and(|class| is_terminal(&class, terminal_classes));
+
+    if terminal {
+        if let Some(argv) = commands.key_paste_terminal.as_ref() {
+            exec::run(argv, None, KEY_TIMEOUT)?;
+            return Ok(());
+        }
+        return native_paste_terminal();
+    }
+
     if let Some(argv) = commands.key_paste.as_ref() {
         exec::run(argv, None, KEY_TIMEOUT)?;
         return Ok(());
     }
     native_paste()
+}
+
+/// Whether `class` names a terminal, by the configured list.
+///
+/// A case-insensitive substring match, so one entry covers the several names
+/// a terminal goes by: `konsole` matches `org.kde.konsole` too.
+#[must_use]
+pub fn is_terminal(class: &str, terminal_classes: &[String]) -> bool {
+    let class = class.trim().to_ascii_lowercase();
+    if class.is_empty() {
+        return false;
+    }
+    terminal_classes
+        .iter()
+        .any(|candidate| !candidate.is_empty() && class.contains(&candidate.to_ascii_lowercase()))
+}
+
+/// The focused window's class, if anything on this system can say.
+///
+/// Wayland offers no way to ask, so this shells out. `None` means the question
+/// could not be answered — not that the window is not a terminal — and the
+/// caller then pastes the ordinary way, which is what happened before any of
+/// this existed.
+fn focused_class(commands: &Commands) -> Option<String> {
+    let ask = |argv: Vec<String>| -> Option<String> {
+        exec::run(&argv, None, KEY_TIMEOUT)
+            .ok()
+            .map(|out| out.stdout_text())
+            .filter(|text| !text.is_empty())
+    };
+
+    if let Some(argv) = commands.window_class.as_ref() {
+        return ask(argv.clone());
+    }
+
+    // kdotool speaks to KWin over D-Bus and so works on Wayland; xdotool is
+    // the X11 equivalent. Both need two steps: the window, then its class.
+    if let Some(window) = ask(vec!["kdotool".to_string(), "getactivewindow".to_string()]) {
+        if let Some(class) = ask(vec![
+            "kdotool".to_string(),
+            "getwindowclassname".to_string(),
+            window,
+        ]) {
+            return Some(class);
+        }
+    }
+
+    ask(vec![
+        "xdotool".to_string(),
+        "getactivewindow".to_string(),
+        "getwindowclassname".to_string(),
+    ])
 }
 
 #[cfg(feature = "native-input")]
@@ -149,6 +216,29 @@ mod backend {
         result.and(release)
     }
 
+    /// Presses the paste chord a terminal uses: the same, plus Shift.
+    pub(super) fn press_paste_terminal() -> Result<(), TypingError> {
+        use enigo::{Direction, Keyboard};
+        let mut enigo = open()?;
+        let modifier = paste_modifier();
+
+        let send = |enigo: &mut enigo::Enigo, key, direction| {
+            enigo
+                .key(key, direction)
+                .map_err(|e| TypingError::Backend(e.to_string()))
+        };
+
+        send(&mut enigo, modifier, Direction::Press)?;
+        let shift = send(&mut enigo, enigo::Key::Shift, Direction::Press);
+        let result =
+            shift.and_then(|()| send(&mut enigo, enigo::Key::Unicode('v'), Direction::Click));
+        // Both released whatever happened, so a failure cannot leave a
+        // modifier stuck down for the rest of the session.
+        let release_shift = send(&mut enigo, enigo::Key::Shift, Direction::Release);
+        let release_modifier = send(&mut enigo, modifier, Direction::Release);
+        result.and(release_shift).and(release_modifier)
+    }
+
     /// The modifier used for paste on this platform.
     pub(super) const fn paste_modifier() -> enigo::Key {
         #[cfg(target_os = "macos")]
@@ -177,6 +267,11 @@ fn native_paste() -> Result<(), TypingError> {
     backend::press_paste()
 }
 
+#[cfg(feature = "native-input")]
+fn native_paste_terminal() -> Result<(), TypingError> {
+    backend::press_paste_terminal()
+}
+
 /// Built without a native backend: only a configured override can type.
 #[cfg(not(feature = "native-input"))]
 fn no_backend() -> TypingError {
@@ -197,6 +292,11 @@ fn native_enter() -> Result<(), TypingError> {
 
 #[cfg(not(feature = "native-input"))]
 fn native_paste() -> Result<(), TypingError> {
+    Err(no_backend())
+}
+
+#[cfg(not(feature = "native-input"))]
+fn native_paste_terminal() -> Result<(), TypingError> {
     Err(no_backend())
 }
 
@@ -255,6 +355,41 @@ mod tests {
         let commands = override_with(&["clip-convert-no-such-program"]);
         let err = type_text("hello", &commands, 1).expect_err("no such program");
         assert!(matches!(err, TypingError::Command(_)), "{err:?}");
+    }
+
+    #[test]
+    fn terminals_are_recognised_by_substring_and_case() {
+        let classes = crate::config::Config::default().terminal_classes;
+        for terminal in [
+            "konsole",
+            "org.kde.konsole",
+            "Konsole",
+            "Alacritty",
+            "org.wezfurlong.wezterm",
+            "com.mitchellh.ghostty",
+            "foot",
+            "xterm-256color",
+        ] {
+            assert!(is_terminal(terminal, &classes), "{terminal} is a terminal");
+        }
+
+        for other in [
+            "firefox",
+            "com.anthropic.Claude",
+            "org.kde.dolphin",
+            "code",
+            "",
+            "   ",
+        ] {
+            assert!(!is_terminal(other, &classes), "{other} is not a terminal");
+        }
+    }
+
+    #[test]
+    fn an_empty_candidate_never_matches_everything() {
+        // A stray "" in the config list would otherwise make every window a
+        // terminal, since every string contains the empty string.
+        assert!(!is_terminal("firefox", &[String::new()]));
     }
 
     #[cfg(feature = "native-input")]

@@ -234,7 +234,8 @@ impl App {
         };
 
         if paste_after && outcome.clipboard_changed {
-            typing::press_paste(&config.commands).context("pasting after the action")?;
+            typing::press_paste(&config.commands, &config.terminal_classes)
+                .context("pasting after the action")?;
         }
 
         log::info!("{} finished: {}", action.id, outcome.message);
