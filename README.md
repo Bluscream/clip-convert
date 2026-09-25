@@ -47,9 +47,11 @@ Use *one* autostart mechanism — a systemd unit and a `~/.config/autostart`
 entry will both start it, and the second copy exits immediately because of the
 single-instance lock, which looks exactly like a failure to start.
 
-**Windows and macOS.** Binaries are built for both and attached to each
-release. They are compiled and nothing more: see
-[platform support](#platform-support).
+**Windows and macOS.** Both compile, and the release workflow builds and
+attaches them — but nothing more than that: see
+[platform support](#platform-support). They are not in the current releases,
+because GitHub Actions does not run on this repository while it is private.
+Making it public is all that is needed.
 
 ---
 
@@ -371,10 +373,15 @@ GTK is gone, but the dialog still needs the usual desktop development headers.
 On an immutable host they live in a container:
 
 ```bash
-./scripts/build.sh            # size limits, format, lint, test, docs, build
+./scripts/build.sh            # format, lint, test, docs, build
 ./scripts/build.sh --release  # optimised
 ./scripts/build.sh --probe    # also measure idle CPU, memory and descriptors
+./scripts/appimage.sh         # the portable AppImage, built in Ubuntu 20.04
 ```
+
+Check the exit status directly rather than piping the output somewhere: a
+pipeline reports its *last* command's status, so `./scripts/build.sh | grep …`
+succeeds even when the build fails.
 
 Every step runs at `nice 15` on half the cores, so a build never makes the
 machine unusable. Override with `LCC_JOBS` and `LCC_NICE`.
@@ -388,6 +395,15 @@ cargo test -p clip-convert-core --no-default-features
 
 `--probe` is the only check that catches a runtime regression such as a
 busy-wait loop or a descriptor leak. It is worth running before a release.
+
+The clipboard end-to-end tests are the ones that catch what unit tests cannot —
+they write to the real clipboard and read it back, which is how the image
+re-encoding, the lost writes and the watcher that caused them were all found:
+
+```bash
+cargo test -p clip-convert-core --no-default-features \
+    --test clipboard_end_to_end -- --ignored --test-threads=1
+```
 
 `tests/source_size.rs` fails the build for any file over 1000 lines or any
 function over 100, and names what went over. Clippy has no lint for either.
