@@ -297,6 +297,8 @@ impl App {
                 id: a.id.clone(),
                 label: a.display_label(clip),
                 icon: a.icon.clone(),
+                button_color: a.button_color.clone(),
+                text_color: a.text_color.clone(),
             })
             .collect();
 

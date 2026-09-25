@@ -275,6 +275,8 @@ mod tests {
                     id: "truncate".to_string(),
                     label: "Truncate".to_string(),
                     icon: None,
+                    button_color: None,
+                    text_color: None,
                 }],
                 true,
             )

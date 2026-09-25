@@ -77,10 +77,10 @@ in_container "cargo doc --workspace --no-deps"
 
 if [[ $RELEASE -eq 1 ]]; then
     echo "==> release build"
-    in_container "cargo build --release"
+    in_container "cargo build --workspace --release"
     BINARY="$PROJECT_DIR/target/release/clip-convert"
 else
-    in_container "cargo build"
+    in_container "cargo build --workspace"
     BINARY="$PROJECT_DIR/target/debug/clip-convert"
 fi
 

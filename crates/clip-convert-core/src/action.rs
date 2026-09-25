@@ -97,6 +97,13 @@ pub struct ActionSpec {
     /// here, so it is never fetched again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Colour of this entry's button, as a hex string such as `#3b5bdb`.
+    /// Absent uses the theme's own button colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_color: Option<String>,
+    /// Colour of the text on this entry's button. Absent uses the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
 }
 
 impl Builtin {
@@ -135,6 +142,10 @@ pub struct Action {
     pub run: Run,
     /// Base64 image data for the button, if one was configured.
     pub icon: Option<String>,
+    /// Hex colour for the button, if one was configured.
+    pub button_color: Option<String>,
+    /// Hex colour for the button's text, if one was configured.
+    pub text_color: Option<String>,
 }
 
 /// Why an `[[actions]]` entry could not be used.
@@ -157,6 +168,12 @@ pub enum ActionError {
     UnknownKind { id: String, kind: String },
     #[error("duplicate action id `{id}`")]
     DuplicateId { id: String },
+    #[error("action `{id}` has `{field} = \"{value}\"`, which is not a hex colour like `#3b5bdb`")]
+    BadColor {
+        id: String,
+        field: &'static str,
+        value: String,
+    },
 }
 
 impl Action {
@@ -191,12 +208,27 @@ impl Action {
             }
         };
 
+        for (field, value) in [
+            ("button_color", spec.button_color.as_ref()),
+            ("text_color", spec.text_color.as_ref()),
+        ] {
+            if !crate::color::is_valid(value) {
+                return Err(ActionError::BadColor {
+                    id,
+                    field,
+                    value: value.cloned().unwrap_or_default(),
+                });
+            }
+        }
+
         Ok(Self {
             kinds: parse_when(&id, &spec.when)?,
             id,
             label: spec.label.trim().to_string(),
             run,
             icon: spec.icon.clone(),
+            button_color: spec.button_color.clone(),
+            text_color: spec.text_color.clone(),
         })
     }
 
@@ -312,6 +344,8 @@ mod tests {
             output: OutputMode::default(),
             enabled: true,
             icon: None,
+            button_color: None,
+            text_color: None,
         }
     }
 

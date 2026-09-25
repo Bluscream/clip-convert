@@ -227,6 +227,8 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         output: OutputMode::default(),
         enabled: true,
         icon: None,
+        button_color: None,
+        text_color: None,
     };
 
     vec![
@@ -271,6 +273,12 @@ pub enum ConfigError {
     NotPositive { field: &'static str },
     #[error("duplicate preset id `{id}`")]
     DuplicatePreset { id: String },
+    #[error("preset `{id}` has `{field} = \"{value}\"`, which is not a hex colour like `#3b5bdb`")]
+    BadPresetColor {
+        id: String,
+        field: &'static str,
+        value: String,
+    },
     #[error("shortener `{name}` is `{kind}` but is missing `{field}`")]
     IncompleteShortener {
         name: String,
@@ -311,6 +319,18 @@ impl Config {
                 return Err(ConfigError::DuplicatePreset {
                     id: preset.id.clone(),
                 });
+            }
+            for (field, value) in [
+                ("button_color", preset.button_color.as_ref()),
+                ("text_color", preset.text_color.as_ref()),
+            ] {
+                if !crate::color::is_valid(value) {
+                    return Err(ConfigError::BadPresetColor {
+                        id: preset.id.clone(),
+                        field,
+                        value: value.cloned().unwrap_or_default(),
+                    });
+                }
             }
         }
 
@@ -592,6 +612,39 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_that_is_not_a_colour_is_reported_by_entry_and_field() {
+        let mut config = Config::default();
+        config.presets[0].button_color = Some("octarine".to_string());
+        match config.validate() {
+            Err(ConfigError::BadPresetColor { id, field, .. }) => {
+                assert_eq!(id, config.presets[0].id);
+                assert_eq!(field, "button_color");
+            }
+            other => panic!("expected BadPresetColor, got {other:?}"),
+        }
+
+        config.presets[0].button_color = Some("#3b5bdb".to_string());
+        config.actions[0].text_color = Some("#not-a-colour".to_string());
+        match config.validate() {
+            Err(ConfigError::Action(crate::action::ActionError::BadColor { field, .. })) => {
+                assert_eq!(field, "text_color");
+            }
+            other => panic!("expected a bad action colour, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_configured_colour_survives_a_round_trip() {
+        let mut config = Config::default();
+        config.actions[0].button_color = Some("#3b5bdb".to_string());
+        config.presets[0].text_color = Some("#fff".to_string());
+        let text = toml::to_string_pretty(&config).expect("encodable");
+        let decoded: Config = toml::from_str(&text).expect("decodable");
+        assert_eq!(decoded, config);
+        config.validate().expect("hex colours are valid");
+    }
+
+    #[test]
     fn duplicate_presets_are_rejected() {
         let mut config = Config::default();
         let first = config.presets[0].clone();
@@ -631,6 +684,8 @@ mod tests {
             output: OutputMode::Clipboard,
             enabled: true,
             icon: None,
+            button_color: None,
+            text_color: None,
         });
         config.auto_shorten = false;
         save_to(&path, &config).expect("save");

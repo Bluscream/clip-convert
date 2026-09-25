@@ -165,31 +165,58 @@ impl Icons {
     }
 }
 
+/// A configured colour, if it was set and understood.
+///
+/// Anything unparseable was already rejected when the config loaded, so a
+/// `None` here means the entry simply did not set one.
+fn color(raw: Option<&String>) -> Option<egui::Color32> {
+    let [r, g, b, a] = clipconv::color::parse(raw?)?;
+    Some(egui::Color32::from_rgba_unmultiplied(r, g, b, a))
+}
+
+/// A custom fill, adjusted so it still reacts to the pointer.
+///
+/// A flat colour painted regardless of state loses the hover and press
+/// feedback every other control has, which makes a coloured button feel dead.
+fn interactive(fill: egui::Color32, response: &egui::Response) -> egui::Color32 {
+    if response.is_pointer_button_down_on() {
+        fill.gamma_multiply(0.8)
+    } else if response.hovered() {
+        fill.gamma_multiply(1.2)
+    } else {
+        fill
+    }
+}
+
 /// A button with an optional icon to the left of its text, the pair centred.
 ///
 /// Drawn rather than composed from `Button::image_and_text`, which aligns its
 /// contents to the left edge. Centring the icon and label as one group is what
 /// keeps a menu of mixed entries — some with icons, some without — looking like
-/// one list.
+/// one list, and painting it directly is also what lets an entry carry its own
+/// colour without losing the hover and press states.
 fn icon_button(
     ui: &mut egui::Ui,
     icons: &mut Icons,
     key: &str,
-    icon: Option<&str>,
+    style: Style<'_>,
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
-    let texture = icon.and_then(|encoded| icons.get(ui.ctx(), key, encoded));
+    let texture = style
+        .icon
+        .and_then(|encoded| icons.get(ui.ctx(), key, encoded));
     let width = ui.available_width();
-
-    let Some(texture) = texture else {
-        return ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap());
-    };
 
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, BUTTON_HEIGHT), egui::Sense::click());
 
     // The label has to fit in what is left once the icon and its gap are taken.
-    let text_limit = (width - ICON_SIZE - ICON_GAP - BUTTON_PADDING * 2.0).max(1.0);
+    let icon_space = if texture.is_some() {
+        ICON_SIZE + ICON_GAP
+    } else {
+        0.0
+    };
+    let text_limit = (width - icon_space - BUTTON_PADDING * 2.0).max(1.0);
     let galley = text.into().into_galley(
         ui,
         Some(egui::TextWrapMode::Wrap),
@@ -201,34 +228,65 @@ fn icon_button(
         // Painted with the same visuals a real button would use, so it responds
         // to hover and focus like every other control.
         let visuals = ui.style().interact(&response);
+        let fill = color(style.button_color)
+            .map_or(visuals.weak_bg_fill, |fill| interactive(fill, &response));
         ui.painter().rect(
             rect.expand(visuals.expansion),
             visuals.rounding,
-            visuals.weak_bg_fill,
+            fill,
             visuals.bg_stroke,
         );
 
-        let group_width = ICON_SIZE + ICON_GAP + galley.size().x;
+        let group_width = icon_space + galley.size().x;
         let left = rect.center().x - group_width / 2.0;
 
-        let icon_rect = egui::Rect::from_min_size(
-            egui::pos2(left, rect.center().y - ICON_SIZE / 2.0),
-            egui::vec2(ICON_SIZE, ICON_SIZE),
-        );
-        // White tint means "draw it as it is"; egui would otherwise recolour the
-        // icon to match the label and flatten a colourful one.
-        egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture))
-            .tint(egui::Color32::WHITE)
-            .paint_at(ui, icon_rect);
+        if let Some(texture) = texture {
+            let icon_rect = egui::Rect::from_min_size(
+                egui::pos2(left, rect.center().y - ICON_SIZE / 2.0),
+                egui::vec2(ICON_SIZE, ICON_SIZE),
+            );
+            // White tint means "draw it as it is"; egui would otherwise recolour
+            // the icon to match the label and flatten a colourful one.
+            egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture))
+                .tint(egui::Color32::WHITE)
+                .paint_at(ui, icon_rect);
+        }
 
-        let text_pos = egui::pos2(
-            left + ICON_SIZE + ICON_GAP,
-            rect.center().y - galley.size().y / 2.0,
-        );
-        ui.painter().galley(text_pos, galley, visuals.text_color());
+        let text_pos = egui::pos2(left + icon_space, rect.center().y - galley.size().y / 2.0);
+        // A galley that set no colour of its own is painted in this one, so a
+        // configured text colour reaches a plain label without the caller
+        // having to build it differently.
+        let text_color = color(style.text_color).unwrap_or_else(|| visuals.text_color());
+        ui.painter().galley(text_pos, galley, text_color);
     }
 
     response
+}
+
+/// What an entry looks like: its icon and its own colours, if it set any.
+#[derive(Clone, Copy, Default)]
+pub struct Style<'a> {
+    pub icon: Option<&'a str>,
+    pub button_color: Option<&'a String>,
+    pub text_color: Option<&'a String>,
+}
+
+impl<'a> Style<'a> {
+    fn for_action(action: &'a ActionEntry) -> Self {
+        Self {
+            icon: action.icon.as_deref(),
+            button_color: action.button_color.as_ref(),
+            text_color: action.text_color.as_ref(),
+        }
+    }
+
+    fn for_preset(preset: &'a Preset) -> Self {
+        Self {
+            icon: preset.icon.as_deref(),
+            button_color: preset.button_color.as_ref(),
+            text_color: preset.text_color.as_ref(),
+        }
+    }
 }
 
 /// Draws the dialog. Returns a reply once the user has finished with it.
@@ -279,10 +337,9 @@ pub fn show(
 /// label; a button given a minimum size draws its text against the left edge.
 /// Wrapping is on so a long label from a custom action folds onto a second line
 /// instead of running off the edge.
-fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+fn wide_button(ui: &mut egui::Ui, icons: &mut Icons, label: &str) -> egui::Response {
     let text = egui::RichText::new(label).size(BUTTON_TEXT).strong();
-    let width = ui.available_width();
-    ui.add_sized([width, BUTTON_HEIGHT], egui::Button::new(text).wrap())
+    icon_button(ui, icons, label, Style::default(), text)
 }
 
 /// One preset: its name, with the limits it encodes underneath in smaller,
@@ -292,13 +349,15 @@ fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 /// sizes and weights — the name is what is being chosen, the limits are there
 /// so choosing does not require remembering each platform's rules.
 fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui::Response {
+    let title =
+        color(preset.text_color.as_ref()).unwrap_or_else(|| ui.visuals().strong_text_color());
     let mut text = egui::text::LayoutJob::default();
     text.append(
         &preset.label,
         0.0,
         egui::TextFormat {
             font_id: egui::FontId::proportional(PRESET_TITLE),
-            color: ui.visuals().strong_text_color(),
+            color: title,
             ..Default::default()
         },
     );
@@ -307,14 +366,14 @@ fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui:
         0.0,
         egui::TextFormat {
             font_id: egui::FontId::proportional(PRESET_SUBTITLE),
-            // Dimmed from the body colour rather than `weak_text_color`,
+            // Dimmed from the title colour rather than `weak_text_color`,
             // which is faint enough to be hard to read at this size.
-            color: ui.visuals().text_color().gamma_multiply(0.82),
+            color: title.gamma_multiply(0.82),
             ..Default::default()
         },
     );
 
-    icon_button(ui, icons, &preset.id, preset.icon.as_deref(), text)
+    icon_button(ui, icons, &preset.id, Style::for_preset(preset), text)
 }
 
 /// A bold line summarising what is on the clipboard.
@@ -346,10 +405,16 @@ fn choose_action(
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for action in actions {
-            let text = egui::RichText::new(&action.label)
+            // Set on the text rather than left to the painter's fallback:
+            // `strong()` gives the galley an explicit colour, which a fallback
+            // can no longer override.
+            let mut text = egui::RichText::new(&action.label)
                 .size(BUTTON_TEXT)
                 .strong();
-            if icon_button(ui, icons, &action.id, action.icon.as_deref(), text).clicked() {
+            if let Some(chosen) = color(action.text_color.as_ref()) {
+                text = text.color(chosen);
+            }
+            if icon_button(ui, icons, &action.id, Style::for_action(action), text).clicked() {
                 chosen = Some(action.id.clone());
             }
             ui.add_space(BUTTON_GAP);
@@ -437,7 +502,7 @@ fn ask_resize_target(
             });
             ui.add_space(BUTTON_GAP);
         }
-        if wide_button(ui, "Custom size…").clicked() {
+        if wide_button(ui, icons, "Custom size…").clicked() {
             open_custom = true;
         }
     });
@@ -514,6 +579,8 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
                             Fit::Inside
                         },
                         icon: None,
+                        button_color: None,
+                        text_color: None,
                     }),
                 });
             }
@@ -546,6 +613,8 @@ mod tests {
                 id: format!("id{i}"),
                 label: format!("Action {i}"),
                 icon: None,
+                button_color: None,
+                text_color: None,
             })
             .collect()
     }

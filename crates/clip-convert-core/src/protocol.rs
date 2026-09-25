@@ -86,6 +86,13 @@ pub struct ActionEntry {
     /// Base64 image data drawn to the left of the label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Colour of this entry's button, as a hex string such as `#3b5bdb`.
+    /// Absent uses the theme's own button colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_color: Option<String>,
+    /// Colour of the text on this entry's button. Absent uses the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
 }
 
 /// What the daemon wants shown.
@@ -194,6 +201,8 @@ mod tests {
                     id: "type".to_string(),
                     label: "Type".to_string(),
                     icon: None,
+                    button_color: Some("#3b5bdb".to_string()),
+                    text_color: None,
                 }],
                 paste_after: true,
             },

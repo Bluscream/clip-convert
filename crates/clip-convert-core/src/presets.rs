@@ -48,6 +48,13 @@ pub struct Preset {
     /// here, so it is never fetched again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Colour of this entry's button, as a hex string such as `#3b5bdb`.
+    /// Absent uses the theme's own button colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_color: Option<String>,
+    /// Colour of the text on this entry's button. Absent uses the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
 }
 
 impl Preset {
@@ -198,6 +205,8 @@ pub fn factory() -> Vec<Preset> {
                 format: (!format.is_empty()).then(|| format.to_string()),
                 fit,
                 icon: None,
+                button_color: None,
+                text_color: None,
             },
         )
         .collect()

@@ -454,6 +454,8 @@ mod tests {
             output,
             enabled: true,
             icon: None,
+            button_color: None,
+            text_color: None,
         })
         .expect("valid action")
     }
@@ -469,6 +471,8 @@ mod tests {
             output: OutputMode::default(),
             enabled: true,
             icon: None,
+            button_color: None,
+            text_color: None,
         })
         .expect("valid action")
     }
@@ -506,6 +510,8 @@ mod tests {
             format: Some("png".to_string()),
             fit: crate::presets::Fit::Inside,
             icon: None,
+            button_color: None,
+            text_color: None,
         }
     }
 

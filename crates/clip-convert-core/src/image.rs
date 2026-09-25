@@ -230,6 +230,8 @@ mod tests {
             format: Some(format.to_string()),
             fit,
             icon: None,
+            button_color: None,
+            text_color: None,
         }
     }
 
