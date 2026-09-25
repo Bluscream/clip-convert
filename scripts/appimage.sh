@@ -62,6 +62,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
         -v "$PROJECT_DIR:/src:z" \
         -v "$PROJECT_DIR/target/appimage-cargo:/cargo:z" \
         -e CARGO_HOME=/cargo \
+        -e RUSTUP_HOME=/cargo/rustup \
         -e CARGO_TARGET_DIR=/src/target/appimage \
         -w /src \
         "$BUILD_IMAGE" \
@@ -71,7 +72,10 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
             apt-get install -y -qq --no-install-recommends \
                 build-essential curl ca-certificates pkg-config perl make \
                 libxkbcommon-dev >/dev/null
-            if [ ! -x /cargo/bin/cargo ]; then
+            # RUSTUP_HOME lives under the cached volume too: without it the
+            # toolchain metadata is thrown away with the container, and the
+            # next run finds a cargo shim with no toolchain to run.
+            if [ ! -x /cargo/bin/cargo ] || [ ! -d /cargo/rustup/toolchains ]; then
                 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
                     | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
             fi

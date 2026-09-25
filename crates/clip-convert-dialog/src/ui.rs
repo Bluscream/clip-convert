@@ -5,9 +5,9 @@
 //! of widgets that have to be built, bound and torn down.
 
 use crate::widgets::{
-    accepted, bottom_bar, close_button, color, dialog_buttons, dismiss_button, heading,
-    history_field, icon_button, navigate, wide_button, Choice, Icons, Style, BUTTON_HEIGHT,
-    BUTTON_TEXT,
+    accepted, bottom_bar, close_button, color, dialog_buttons, dismiss_button, focus_first,
+    heading, history_field, icon_button, navigate, wide_button, Choice, Icons, Style,
+    BUTTON_HEIGHT, BUTTON_TEXT,
 };
 use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
@@ -382,11 +382,7 @@ fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Rep
             .desired_width(f32::INFINITY)
             .font(egui::TextStyle::Monospace),
     );
-    // Only claimed when nothing else holds focus: requesting it every frame
-    // would keep the process repainting instead of idling.
-    if ui.memory(|m| m.focused().is_none()) {
-        entry.request_focus();
-    }
+    focus_first(ui, &entry);
 
     if parsed.is_none() && !value.trim().is_empty() {
         ui.colored_label(
@@ -470,10 +466,12 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
     let row = |ui: &mut egui::Ui, caption: &str, value: &mut String| {
         ui.horizontal(|ui| {
             ui.add_sized([180.0, 24.0], egui::Label::new(caption));
-            ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
-        });
+            ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
+        })
+        .inner
     };
-    row(ui, "Width (px)", &mut fields.width);
+    let first = row(ui, "Width (px)", &mut fields.width);
+    focus_first(ui, &first);
     row(ui, "Height (px)", &mut fields.height);
     row(ui, "Max size (KB, 0 = any)", &mut fields.max_kb);
 
@@ -542,10 +540,12 @@ fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) 
                 egui::TextEdit::singleline(value)
                     .hint_text(hint)
                     .desired_width(f32::INFINITY),
-            );
-        });
+            )
+        })
+        .inner
     };
-    row(ui, "Width (px)", "leave blank to keep", &mut fields.width);
+    let width = row(ui, "Width (px)", "leave blank to keep", &mut fields.width);
+    focus_first(ui, &width);
     row(ui, "Height (px)", "leave blank to keep", &mut fields.height);
     row(ui, "Max file size", "e.g. 10mb", &mut fields.max_size);
     row(ui, "Length", "e.g. 1:30", &mut fields.length);
@@ -617,7 +617,8 @@ fn ask_replace(
     });
 
     heading(ui, "Replace every match of:");
-    history_field(ui, "patterns", &mut fields.pattern, patterns);
+    let pattern = history_field(ui, "patterns", &mut fields.pattern, patterns);
+    focus_first(ui, &pattern);
 
     // Only complained about once something has been typed: an empty field on
     // opening is not a mistake yet.

@@ -243,7 +243,12 @@ const ACTION_HEIGHT: f32 = 38.0;
 ///
 /// The arrow is disabled rather than hidden when there is no history, so the
 /// field does not change width the first time the action is used.
-pub fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &[String]) {
+pub fn history_field(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut String,
+    history: &[String],
+) -> egui::Response {
     let popup_id = ui.make_persistent_id(id);
     let total = ui.available_width();
 
@@ -272,7 +277,22 @@ pub fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &
                 }
             },
         );
-    });
+        field
+    })
+    .inner
+}
+
+/// Gives a field the keyboard when nothing else has it.
+///
+/// A form opened by a hotkey with no focus anywhere cannot be typed into at
+/// all: Tab moves between focusable widgets, but only once one of them has the
+/// focus to move from. Claimed only when nothing else holds it, because
+/// requesting it every frame would keep the process repainting instead of
+/// idling.
+pub fn focus_first(ui: &egui::Ui, field: &egui::Response) {
+    if ui.memory(|memory| memory.focused().is_none()) {
+        field.request_focus();
+    }
 }
 
 /// The arrow on the end of a history field, painted rather than written.
