@@ -28,6 +28,8 @@ pub enum Builtin {
     Resize,
     /// Substitute every regular-expression match in the text.
     Replace,
+    /// Re-encode the content as another format.
+    Convert,
 }
 
 /// How clipboard content reaches an external command.
@@ -114,12 +116,17 @@ impl Builtin {
     /// Distinct from the `when` list, which only decides whether the action is
     /// offered. `Type` is offered for a file selection but works on its text
     /// form, so it should read "Type Text" rather than "Type Files".
+    ///
+    /// `None` means the behaviour has no one subject — `Convert` works on
+    /// images, files and rich text alike — and the label is then taken from
+    /// the most specific kind present instead.
     #[must_use]
-    pub fn consumes(self) -> ContentKind {
+    pub fn consumes(self) -> Option<ContentKind> {
         match self {
-            Self::Type | Self::Split | Self::Truncate | Self::Replace => ContentKind::Text,
-            Self::Shorten => ContentKind::Url,
-            Self::Resize => ContentKind::Image,
+            Self::Type | Self::Split | Self::Truncate | Self::Replace => Some(ContentKind::Text),
+            Self::Shorten => Some(ContentKind::Url),
+            Self::Resize => Some(ContentKind::Image),
+            Self::Convert => None,
         }
     }
 }
@@ -262,11 +269,12 @@ impl Action {
         let available = clip.kinds();
 
         if let Run::Builtin(builtin) = self.run {
-            let consumed = builtin.consumes();
-            // No noun when the thing it works on is not there. "Type" offered
-            // for a bare image would otherwise read "Type Image", which is
-            // exactly the one thing it cannot do.
-            return available.contains(&consumed).then_some(consumed);
+            if let Some(consumed) = builtin.consumes() {
+                // No noun when the thing it works on is not there. "Type"
+                // offered for a bare image would otherwise read "Type Image",
+                // which is exactly the one thing it cannot do.
+                return available.contains(&consumed).then_some(consumed);
+            }
         }
 
         // A configured command says nothing about what it reads, so the most
@@ -400,7 +408,7 @@ mod tests {
         let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
         // "Type" keeps its bare label: an image has no text form, so there is
         // no honest noun to add.
-        assert_eq!(labels_for(&clip), ["Type", "Resize Image"]);
+        assert_eq!(labels_for(&clip), ["Type", "Resize Image", "Convert Image"]);
     }
 
     #[test]

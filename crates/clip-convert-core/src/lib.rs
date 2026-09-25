@@ -7,10 +7,12 @@
 
 pub mod action;
 pub mod auto;
+pub(crate) mod batch;
 pub mod clipboard;
 pub mod color;
 pub mod config;
 pub mod content;
+pub mod convert;
 pub mod encode;
 pub mod exec;
 pub mod files;

@@ -53,6 +53,7 @@ pub enum State {
     AskLimit { value: String },
     AskResizeTarget { custom: Option<CustomSize> },
     AskReplace { fields: ReplaceFields },
+    AskConversion,
     ShowError,
 }
 
@@ -75,6 +76,7 @@ impl State {
                 value: default.to_string(),
             },
             Request::AskResizeTarget { .. } => Self::AskResizeTarget { custom: None },
+            Request::AskConversion { .. } => Self::AskConversion,
             // Pre-filled with the last pattern used: repeating the previous
             // replacement on a new piece of text is the common case.
             Request::AskReplace {
@@ -132,6 +134,11 @@ pub fn window_height(request: &Request) -> f32 {
         }
         Request::AskLimit { .. } => 200.0,
         Request::AskReplace { .. } => 260.0,
+        Request::AskConversion { options, .. } => {
+            #[allow(clippy::cast_precision_loss)] // Never enough entries to matter.
+            let rows = options.len() as f32;
+            rows.mul_add(BUTTON_HEIGHT + BUTTON_GAP, 130.0).min(720.0)
+        }
         Request::AskResizeTarget { presets } => {
             // Two per row, plus a row for the custom-size button.
             let rows = presets.len().div_ceil(PRESET_COLUMNS) + 1;
@@ -343,6 +350,9 @@ pub fn show(
                     },
                     State::AskReplace { fields },
                 ) => ask_replace(ui, patterns, replacements, fields),
+                (Request::AskConversion { source, options }, State::AskConversion) => {
+                    ask_conversion(ui, source, options, icons)
+                }
                 (Request::ShowError { message }, State::ShowError) => show_error(ui, message),
                 // The state is always built from the request, so this cannot
                 // happen; dismissing is the safe answer if it ever did.
@@ -655,6 +665,33 @@ fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &[Str
     });
 }
 
+fn ask_conversion(
+    ui: &mut egui::Ui,
+    source: &str,
+    options: &[ActionEntry],
+    icons: &mut Icons,
+) -> Option<Reply> {
+    heading(ui, &format!("Convert {source} to:"));
+
+    let mut chosen = None;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for option in options {
+            let mut text = egui::RichText::new(&option.label)
+                .size(BUTTON_TEXT)
+                .strong();
+            if let Some(colour) = color(option.text_color.as_ref()) {
+                text = text.color(colour);
+            }
+            if icon_button(ui, icons, &option.id, Style::for_action(option), text).clicked() {
+                chosen = Some(option.id.clone());
+            }
+            ui.add_space(BUTTON_GAP);
+        }
+    });
+
+    chosen.map(|conversion_id| Reply::Conversion { conversion_id })
+}
+
 fn ask_replace(
     ui: &mut egui::Ui,
     patterns: &[String],
@@ -778,6 +815,10 @@ mod tests {
                 patterns: Vec::new(),
                 replacements: Vec::new(),
             },
+            Request::AskConversion {
+                source: "PNG".to_string(),
+                options: actions(2),
+            },
             Request::ShowError {
                 message: String::new(),
             },
@@ -794,6 +835,7 @@ mod tests {
                         State::AskResizeTarget { .. }
                     )
                     | (Request::AskReplace { .. }, State::AskReplace { .. })
+                    | (Request::AskConversion { .. }, State::AskConversion)
                     | (Request::ShowError { .. }, State::ShowError)
             );
             assert!(paired, "{request:?} did not pair with its state");
@@ -826,6 +868,20 @@ mod tests {
                 _ => panic!("wrong state"),
             }
         }
+    }
+
+    #[test]
+    fn the_conversion_list_grows_with_the_number_of_options() {
+        let few = Request::AskConversion {
+            source: "PNG".to_string(),
+            options: actions(2),
+        };
+        let many = Request::AskConversion {
+            source: "PNG".to_string(),
+            options: actions(6),
+        };
+        assert!(window_height(&many) > window_height(&few));
+        assert!(window_height(&many) <= 720.0);
     }
 
     #[test]

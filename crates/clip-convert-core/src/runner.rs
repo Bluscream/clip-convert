@@ -11,11 +11,10 @@ use crate::config::Config;
 use crate::content::Clip;
 use crate::presets::Preset;
 use crate::{exec, image, shorten, text, typing};
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// How long a user-configured command may run.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Questions an action may need to ask before it can proceed.
 ///
@@ -25,6 +24,12 @@ pub trait Prompt {
     fn ask_limit(&self, title: &str, message: &str, default: usize) -> Option<usize>;
     /// Asks which size target to resize to.
     fn ask_resize_target(&self, presets: &[Preset]) -> Option<Preset>;
+    /// Asks which format to convert to, given what the content already is.
+    fn ask_conversion(
+        &self,
+        source: &str,
+        options: &[crate::protocol::ActionEntry],
+    ) -> Option<String>;
     /// Asks for a pattern and its replacement, offering what was used before.
     fn ask_replace(
         &self,
@@ -69,6 +74,10 @@ pub enum RunError {
         #[source]
         source: regex::Error,
     },
+    #[error("there is nothing here that can be converted to another format")]
+    NothingToConvert,
+    #[error(transparent)]
+    Convert(#[from] crate::convert::ConvertError),
     #[error("none of the {total} files could be processed. {first}")]
     BatchFailed { total: usize, first: String },
 }
@@ -125,6 +134,7 @@ fn run_builtin(
         Builtin::Truncate => run_truncate(clip, config, prompt),
         Builtin::Resize => run_resize(clip, config, prompt),
         Builtin::Replace => run_replace(clip, config, prompt),
+        Builtin::Convert => run_convert(clip, config, prompt),
     }
 }
 
@@ -267,42 +277,90 @@ fn run_resize(
         label: "Resize".to_string(),
     })?;
 
-    let batch = resize_batch(files, &target)?;
+    let batch = crate::batch::resize_batch(files, &target)?;
     clipboard::write_files(&batch.written)?;
     Ok(Some(batch.into_outcome(&target)))
 }
 
-/// What a batch produced.
-#[derive(Debug)]
-struct Batch {
-    written: Vec<PathBuf>,
-    failures: Vec<String>,
-    total: usize,
+/// Asks what to convert to, then does it.
+///
+/// The choice is a second dialog rather than a longer action menu: which
+/// conversions exist depends on what the clipboard holds, and folding them
+/// into the first menu would make its length depend on the content in a way
+/// that makes the common entries move around.
+fn run_convert(
+    clip: &Clip,
+    config: &Config,
+    prompt: &dyn Prompt,
+) -> Result<Option<Outcome>, RunError> {
+    let sources = crate::convert::source_formats(clip);
+    let options = crate::convert::applicable(&config.conversions, &sources);
+    if options.is_empty() {
+        return Err(RunError::NothingToConvert);
+    }
+
+    let entries: Vec<crate::protocol::ActionEntry> = options
+        .iter()
+        .map(|c| crate::protocol::ActionEntry {
+            id: c.id.clone(),
+            label: c.display_label(),
+            icon: c.icon.clone(),
+            button_color: c.button_color.clone(),
+            text_color: c.text_color.clone(),
+        })
+        .collect();
+
+    let source = sources
+        .iter()
+        .map(|f| f.to_uppercase())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(chosen) = prompt.ask_conversion(&source, &entries) else {
+        return Ok(None);
+    };
+    let Some(conversion) = options.into_iter().find(|c| c.id == chosen) else {
+        log::warn!("chosen conversion {chosen} vanished");
+        return Ok(None);
+    };
+
+    convert_clip(clip, conversion)
 }
 
-impl Batch {
-    /// Reports what happened, naming the failures rather than hiding them.
-    fn into_outcome(self, target: &Preset) -> Outcome {
-        let mut message = format!(
-            "Resized {} of {} for {}. The results are on the clipboard.",
-            self.written.len(),
-            self.total,
-            target.label
-        );
-        if !self.failures.is_empty() {
-            use std::fmt::Write;
-            let _ = write!(
-                message,
-                "\n{} failed: {}",
-                self.failures.len(),
-                self.failures.join("; ")
-            );
-        }
-        Outcome {
-            message,
+/// Carries out one conversion against whatever the clipboard holds.
+fn convert_clip(
+    clip: &Clip,
+    conversion: &crate::convert::Conversion,
+) -> Result<Option<Outcome>, RunError> {
+    // Rich text first: an HTML clipboard usually carries a plain-text facet
+    // too, and converting the markup is what was asked for.
+    if conversion.is_native() && crate::convert::normalise(&conversion.to) == "md" {
+        let html = clip.html().ok_or(RunError::NothingToConvert)?;
+        let markdown = crate::convert::html_to_markdown(html);
+        clipboard::write_text(&markdown)?;
+        return Ok(Some(Outcome {
+            message: format!("Converted to Markdown ({} characters).", markdown.len()),
             clipboard_changed: true,
-        }
+        }));
     }
+
+    if let Some((_, bytes)) = clip.image() {
+        let converted = crate::convert::image_to(bytes, &conversion.to)?;
+        let mime = format!("image/{}", crate::convert::normalise(&conversion.to));
+        clipboard::write_image(&mime, &converted)?;
+        return Ok(Some(Outcome {
+            message: format!(
+                "Converted to {} ({}).",
+                conversion.to.to_uppercase(),
+                crate::content::human_bytes(converted.len())
+            ),
+            clipboard_changed: true,
+        }));
+    }
+
+    let files = clip.files().ok_or(RunError::NothingToConvert)?;
+    let batch = crate::batch::convert_batch(files, conversion)?;
+    clipboard::write_files(&batch.written)?;
+    Ok(Some(batch.into_conversion_outcome(conversion)))
 }
 
 /// Replaces the clipboard's image with a resized copy.
@@ -320,79 +378,6 @@ fn resize_one(bytes: &[u8], target: &Preset) -> Result<Outcome, RunError> {
         ),
         clipboard_changed: true,
     })
-}
-
-/// Resizes every file, writing the results into a scratch directory.
-///
-/// Does not touch the clipboard — the caller does that. Keeping the side effect
-/// out means this can be tested without writing over whatever the user has
-/// copied, which an earlier version did.
-///
-/// One unreadable file does not abandon the rest: the others are still useful,
-/// and the failures are named in the result rather than swallowed.
-fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Batch, RunError> {
-    let directory = crate::scratch::output_dir("resize").map_err(RunError::TempFile)?;
-
-    let mut written = Vec::new();
-    let mut failures = Vec::new();
-
-    for source in files {
-        match resize_file(source, target, &directory) {
-            Ok(path) => written.push(path),
-            Err(e) => {
-                log::warn!("resizing {} failed: {e}", source.display());
-                failures.push(format!("{}: {e}", file_label(source)));
-            }
-        }
-    }
-
-    if written.is_empty() {
-        return Err(RunError::BatchFailed {
-            total: files.len(),
-            first: failures.into_iter().next().unwrap_or_default(),
-        });
-    }
-
-    Ok(Batch {
-        written,
-        failures,
-        total: files.len(),
-    })
-}
-
-/// Resizes one file of a batch, returning where it was written.
-fn resize_file(
-    source: &PathBuf,
-    target: &Preset,
-    directory: &std::path::Path,
-) -> Result<PathBuf, RunError> {
-    let bytes = std::fs::read(source).map_err(RunError::TempFile)?;
-    let resized = image::resize(&bytes, target)?;
-
-    // A target that keeps the source's format has no extension of its own, so
-    // the result keeps the one it came in with.
-    let extension = target.format.clone().unwrap_or_else(|| {
-        source
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("png")
-            .to_ascii_lowercase()
-    });
-    let output = directory.join(crate::scratch::output_name(
-        source,
-        &target.label,
-        &extension,
-    ));
-    std::fs::write(&output, &resized.bytes).map_err(RunError::TempFile)?;
-    Ok(output)
-}
-
-/// A file's name, for a message that must stay short.
-fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("a file")
-        .to_string()
 }
 
 fn run_command(
@@ -475,12 +460,14 @@ mod tests {
     use super::*;
     use crate::action::ActionSpec;
     use crate::content::ContentKind;
+    use std::path::PathBuf;
 
     /// Answers every prompt the same way, so a test can state its intent.
     struct Canned {
         limit: Option<usize>,
         target: Option<Preset>,
         replacement: Option<crate::replace::Replacement>,
+        conversion: Option<String>,
     }
 
     impl Prompt for Canned {
@@ -493,6 +480,9 @@ mod tests {
         fn ask_replace(&self, _: &[String], _: &[String]) -> Option<crate::replace::Replacement> {
             self.replacement.clone()
         }
+        fn ask_conversion(&self, _: &str, _: &[crate::protocol::ActionEntry]) -> Option<String> {
+            self.conversion.clone()
+        }
     }
 
     fn cancels() -> Canned {
@@ -500,6 +490,7 @@ mod tests {
             limit: None,
             target: None,
             replacement: None,
+            conversion: None,
         }
     }
 
@@ -543,6 +534,7 @@ mod tests {
             limit: None,
             target: Some(preset),
             replacement: None,
+            conversion: None,
         }
     }
 
@@ -555,6 +547,7 @@ mod tests {
                 pattern: pattern.to_string(),
                 replacement: with.to_string(),
             }),
+            conversion: None,
         }
     }
 
@@ -599,7 +592,7 @@ mod tests {
             })
             .collect();
 
-        let batch = resize_batch(&sources, &preset()).expect("batch runs");
+        let batch = crate::batch::resize_batch(&sources, &preset()).expect("batch runs");
         assert_eq!(batch.written.len(), 3);
         assert!(batch.failures.is_empty());
         for path in &batch.written {
@@ -619,7 +612,8 @@ mod tests {
         let bad = dir.path().join("broken.png");
         std::fs::write(&bad, b"not an image").expect("writes");
 
-        let batch = resize_batch(&[good, bad], &preset()).expect("partial success still works");
+        let batch = crate::batch::resize_batch(&[good, bad], &preset())
+            .expect("partial success still works");
         assert_eq!(batch.written.len(), 1);
         let message = batch.into_outcome(&preset()).message;
         assert!(message.contains("Resized 1 of 2"), "{message}");
@@ -632,7 +626,7 @@ mod tests {
         let bad = dir.path().join("broken.png");
         std::fs::write(&bad, b"not an image").expect("writes");
 
-        let err = resize_batch(&[bad], &preset()).expect_err("nothing succeeded");
+        let err = crate::batch::resize_batch(&[bad], &preset()).expect_err("nothing succeeded");
         assert!(
             matches!(err, RunError::BatchFailed { total: 1, .. }),
             "{err:?}"
@@ -853,5 +847,88 @@ mod tests {
         )
         .expect("cancelling is not a failure");
         assert_eq!(outcome, None);
+    }
+
+    fn conversion(id: &str, to: &str, command: &[&str]) -> crate::convert::Conversion {
+        crate::convert::Conversion {
+            id: id.to_string(),
+            label: None,
+            from: vec!["png".to_string()],
+            to: to.to_string(),
+            command: command.iter().map(|c| (*c).to_string()).collect(),
+            enabled: true,
+            icon: None,
+            button_color: None,
+            text_color: None,
+        }
+    }
+
+    #[test]
+    fn a_native_conversion_writes_a_file_in_the_target_format() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("shot.png");
+        small_png(&source, 32, 32);
+
+        let out =
+            crate::batch::convert_file(&source, &conversion("to-ico", "ico", &[]), dir.path())
+                .expect("converts");
+        assert_eq!(out.extension().and_then(|e| e.to_str()), Some("ico"));
+        let bytes = std::fs::read(&out).expect("readable");
+        assert_eq!(
+            ::image::guess_format(&bytes).expect("a known format"),
+            ::image::ImageFormat::Ico
+        );
+    }
+
+    #[test]
+    fn a_command_that_prints_its_result_has_it_captured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("note.png");
+        std::fs::write(&source, b"ignored").expect("write");
+
+        // No {output} in the command, so stdout becomes the file.
+        let out = crate::batch::convert_file(
+            &source,
+            &conversion("to-txt", "txt", &["/bin/echo", "hello {input}"]),
+            dir.path(),
+        )
+        .expect("runs");
+        let written = std::fs::read_to_string(&out).expect("readable");
+        assert!(written.starts_with("hello "), "{written}");
+        assert!(written.contains("note.png"), "{written}");
+    }
+
+    #[test]
+    fn a_command_given_an_output_path_is_trusted_to_write_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("note.png");
+        std::fs::write(&source, b"contents").expect("write");
+
+        let out = crate::batch::convert_file(
+            &source,
+            &conversion("to-txt", "txt", &["/bin/cp", "{input}", "{output}"]),
+            dir.path(),
+        )
+        .expect("runs");
+        assert_eq!(
+            std::fs::read(&out).expect("readable"),
+            b"contents",
+            "the command's own output file must be left alone"
+        );
+    }
+
+    #[test]
+    fn a_batch_skips_files_the_conversion_does_not_take() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let png = dir.path().join("a.png");
+        small_png(&png, 8, 8);
+        let other = dir.path().join("b.txt");
+        std::fs::write(&other, b"not an image").expect("write");
+
+        let batch = crate::batch::convert_batch(&[png, other], &conversion("to-gif", "gif", &[]))
+            .expect("the png alone is enough");
+        assert_eq!(batch.total, 1, "only the png should have been considered");
+        assert_eq!(batch.written.len(), 1);
+        assert!(batch.failures.is_empty());
     }
 }

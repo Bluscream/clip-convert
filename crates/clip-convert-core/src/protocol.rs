@@ -114,6 +114,13 @@ pub enum Request {
         message: String,
         default: usize,
     },
+    /// Which format to convert the content to.
+    AskConversion {
+        /// What is being converted, for the heading, e.g. `PNG`.
+        source: String,
+        /// The conversions worth offering, in config order.
+        options: Vec<ActionEntry>,
+    },
     /// A pattern to search for and what to put in its place.
     AskReplace {
         /// Patterns used before, most recent first, offered for reuse.
@@ -138,6 +145,7 @@ impl Request {
         match self {
             Self::ChooseAction { .. } => "actions",
             Self::AskLimit { .. } => "limit",
+            Self::AskConversion { .. } => "convert",
             Self::AskReplace { .. } => "replace",
             Self::AskResizeTarget { .. } => "resize",
             Self::ShowError { .. } => "error",
@@ -150,6 +158,7 @@ impl Request {
         match self {
             Self::ChooseAction { .. } => "Clipboard actions",
             Self::AskLimit { title, .. } => title,
+            Self::AskConversion { .. } => "Convert to",
             Self::AskReplace { .. } => "Find and replace",
             Self::AskResizeTarget { .. } => "Resize image",
             Self::ShowError { .. } => "Something went wrong",
@@ -187,6 +196,10 @@ pub enum Reply {
     Replace {
         replacement: crate::replace::Replacement,
     },
+    /// The `id` of the chosen conversion.
+    Conversion {
+        conversion_id: String,
+    },
     /// The dialog was shown and acknowledged, with nothing to report.
     Acknowledged,
     Cancelled,
@@ -223,6 +236,16 @@ mod tests {
                 message: "How many?".to_string(),
                 default: 2000,
             },
+            Request::AskConversion {
+                source: "PNG".to_string(),
+                options: vec![ActionEntry {
+                    id: "to-ico".to_string(),
+                    label: "To ICO".to_string(),
+                    icon: None,
+                    button_color: None,
+                    text_color: None,
+                }],
+            },
             Request::AskReplace {
                 patterns: vec![r"\d+".to_string()],
                 replacements: vec!["$1".to_string()],
@@ -257,6 +280,9 @@ mod tests {
                     pattern: r"(\w+), (\w+)".to_string(),
                     replacement: "$2 $1".to_string(),
                 },
+            },
+            Reply::Conversion {
+                conversion_id: "to-ico".to_string(),
             },
             Reply::Acknowledged,
             Reply::Cancelled,
@@ -309,6 +335,11 @@ mod tests {
                 title: String::new(),
                 message: String::new(),
                 default: 1,
+            }
+            .size_key(),
+            Request::AskConversion {
+                source: String::new(),
+                options: Vec::new(),
             }
             .size_key(),
             Request::AskReplace {

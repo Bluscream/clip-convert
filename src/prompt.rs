@@ -178,6 +178,16 @@ impl Prompt for Prompter {
         }
     }
 
+    fn ask_conversion(&self, source: &str, options: &[ActionEntry]) -> Option<String> {
+        match self.ask(&Request::AskConversion {
+            source: source.to_string(),
+            options: options.to_vec(),
+        }) {
+            Reply::Conversion { conversion_id } => Some(conversion_id),
+            _ => None,
+        }
+    }
+
     fn ask_replace(&self, patterns: &[String], replacements: &[String]) -> Option<Replacement> {
         match self.ask(&Request::AskReplace {
             patterns: patterns.to_vec(),
@@ -367,6 +377,15 @@ mod tests {
                 width: 700,
                 height: 500
             })
+        );
+    }
+
+    #[test]
+    fn a_chosen_conversion_comes_back_by_id() {
+        let prompter = stub(r#"echo '{"reply":{"reply":"conversion","conversion_id":"to-ico"}}'"#);
+        assert_eq!(
+            prompter.ask_conversion("PNG", &[]),
+            Some("to-ico".to_string())
         );
     }
 

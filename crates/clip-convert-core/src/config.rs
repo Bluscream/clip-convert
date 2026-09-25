@@ -199,6 +199,9 @@ pub struct Config {
     pub shorteners: Vec<Shortener>,
     #[serde(default = "presets::factory")]
     pub presets: Vec<Preset>,
+    /// What the `convert` built-in can turn things into.
+    #[serde(default = "crate::convert::factory")]
+    pub conversions: Vec<crate::convert::Conversion>,
     #[serde(default = "factory_actions")]
     pub actions: Vec<ActionSpec>,
     /// Sizes the dialogs were last left at, keyed by dialog.
@@ -241,6 +244,7 @@ impl Default for Config {
             commands: Commands::default(),
             shorteners: Vec::new(),
             presets: presets::factory(),
+            conversions: crate::convert::factory(),
             actions: factory_actions(),
             window_sizes: BTreeMap::new(),
         }
@@ -278,6 +282,12 @@ pub fn factory_actions() -> Vec<ActionSpec> {
             Builtin::Replace,
         ),
         builtin("resize", "Resize", &["image"], Builtin::Resize),
+        builtin(
+            "convert",
+            "Convert",
+            &["image", "files", "html"],
+            Builtin::Convert,
+        ),
     ]
 }
 
@@ -310,6 +320,10 @@ pub enum ConfigError {
     BadRegex(#[from] regex::Error),
     #[error("{field} must be greater than zero")]
     NotPositive { field: &'static str },
+    #[error("duplicate conversion id `{id}`")]
+    DuplicateConversion { id: String },
+    #[error("conversion `{id}` has an empty `to`; it must name a target format")]
+    ConversionWithoutTarget { id: String },
     #[error("duplicate preset id `{id}`")]
     DuplicatePreset { id: String },
     #[error("preset `{id}` has `{field} = \"{value}\"`, which is not a hex colour like `#3b5bdb`")]
@@ -370,6 +384,20 @@ impl Config {
                         value: value.cloned().unwrap_or_default(),
                     });
                 }
+            }
+        }
+
+        let mut seen = BTreeSet::new();
+        for conversion in &self.conversions {
+            if !seen.insert(&conversion.id) {
+                return Err(ConfigError::DuplicateConversion {
+                    id: conversion.id.clone(),
+                });
+            }
+            if conversion.to.trim().is_empty() {
+                return Err(ConfigError::ConversionWithoutTarget {
+                    id: conversion.id.clone(),
+                });
             }
         }
 
@@ -562,6 +590,8 @@ mod tests {
                 .iter()
                 .map(|a| a.id.as_str())
                 .collect();
+        // Convert is absent: nothing in the factory table turns a URL into
+        // anything else.
         assert_eq!(ids, ["type", "shorten", "split", "truncate", "replace"]);
     }
 
@@ -573,7 +603,7 @@ mod tests {
                 .iter()
                 .map(|a| a.id.as_str())
                 .collect();
-        assert_eq!(ids, ["type", "resize"]);
+        assert_eq!(ids, ["type", "resize", "convert"]);
     }
 
     #[test]
@@ -681,6 +711,29 @@ mod tests {
         let decoded: Config = toml::from_str(&text).expect("decodable");
         assert_eq!(decoded, config);
         config.validate().expect("hex colours are valid");
+    }
+
+    #[test]
+    fn a_conversion_without_a_target_is_rejected_by_id() {
+        let mut config = Config::default();
+        config.conversions[0].to = String::new();
+        match config.validate() {
+            Err(ConfigError::ConversionWithoutTarget { id }) => {
+                assert_eq!(id, config.conversions[0].id);
+            }
+            other => panic!("expected ConversionWithoutTarget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_conversions_are_rejected() {
+        let mut config = Config::default();
+        let first = config.conversions[0].clone();
+        config.conversions.push(first);
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::DuplicateConversion { .. })
+        ));
     }
 
     #[test]
