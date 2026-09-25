@@ -62,4 +62,5 @@ global-hotkey = "0.6"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# No `panic = "abort"`: one dependency cannot be compiled with it. The
+# behaviour is kept by a panic hook in main.rs, which aborts the process.

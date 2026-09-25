@@ -32,11 +32,28 @@ use prompt::Prompter;
 use std::sync::mpsc;
 use std::sync::Arc;
 
+/// Makes a panic anywhere kill the whole process, loudly.
+///
+/// This used to be `panic = "abort"` in the release profile, which one
+/// dependency cannot be built with. The behaviour is what matters and it is
+/// kept here: a panic in a worker thread would otherwise take only that thread
+/// with it, leaving a tray icon whose hotkey or clipboard watcher silently no
+/// longer works — the worst of both outcomes.
+fn abort_on_panic() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        log::error!("panicked: {info}");
+        std::process::abort();
+    }));
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("clip_convert=info,clipconv=info"),
     )
     .init();
+    abort_on_panic();
 
     // Held for the whole run; released by the kernel however the process exits.
     let _instance = instance::acquire()?;
