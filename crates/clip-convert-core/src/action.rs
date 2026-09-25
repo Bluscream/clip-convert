@@ -288,9 +288,24 @@ impl Action {
     /// A clipboard offers several kinds at once — a file selection is also
     /// text, and a copied image may carry its source URL — so an action is
     /// offered when *any* of them matches.
+    ///
+    /// A built-in must additionally have the thing it works on. Offering an
+    /// entry whose only possible outcome is an error box wastes the one click
+    /// the menu exists to save: `Type` for a bare image can only report that
+    /// there is no text, so it does not appear at all.
     #[must_use]
     pub fn applies_to(&self, available: &BTreeSet<ContentKind>) -> bool {
-        !self.kinds.is_disjoint(available)
+        if self.kinds.is_disjoint(available) {
+            return false;
+        }
+        match self.run {
+            Run::Builtin(builtin) => builtin
+                .consumes()
+                .is_none_or(|consumed| available.contains(&consumed)),
+            // A configured command says nothing about what it reads, so its
+            // `when` list is the only thing that can be trusted.
+            Run::Command { .. } => true,
+        }
     }
 }
 
@@ -407,9 +422,35 @@ mod tests {
     #[test]
     fn a_single_image_is_singular() {
         let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
-        // "Type" keeps its bare label: an image has no text form, so there is
-        // no honest noun to add.
-        assert_eq!(labels_for(&clip), ["Type", "Resize Image", "Convert Image"]);
+        // "Type" is absent rather than offered and then failing: an image has
+        // no text form for it to work on.
+        assert_eq!(labels_for(&clip), ["Resize Image", "Convert Image"]);
+    }
+
+    #[test]
+    fn an_action_that_could_only_fail_is_not_offered() {
+        // A bare image has no text facet, so every built-in that works on text
+        // must be absent rather than present-and-doomed.
+        let image = BTreeSet::from([ContentKind::Image]);
+        let actions = factory();
+        let offered: Vec<&str> = for_kinds(&actions, &image)
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect();
+
+        for text_action in ["type", "split", "truncate", "replace"] {
+            assert!(
+                !offered.contains(&text_action),
+                "{text_action} works on text and cannot act on a bare image: {offered:?}"
+            );
+        }
+        assert!(offered.contains(&"resize"), "{offered:?}");
+    }
+
+    #[test]
+    fn typing_is_offered_for_files_because_they_have_a_text_form() {
+        let clip = Clip::from_files(vec![PathBuf::from("/a/one.png")]).expect("non-empty");
+        assert!(labels_for(&clip).contains(&"Type Text".to_string()));
     }
 
     #[test]
@@ -476,10 +517,27 @@ mod tests {
 
     #[test]
     fn an_empty_when_list_means_every_kind() {
-        let action = Action::from_spec(&spec("a")).expect("valid");
+        let mut bare = spec("a");
+        // A command, so the `when` list alone decides; a built-in is also
+        // filtered by what it works on.
+        bare.builtin = None;
+        bare.command = vec!["true".to_string()];
+        let action = Action::from_spec(&bare).expect("valid");
         for kind in ContentKind::all() {
             assert!(action.applies_to(&BTreeSet::from([kind])));
         }
+    }
+
+    #[test]
+    fn a_command_is_offered_wherever_its_when_list_says() {
+        // Unlike a built-in, nothing is known about what it reads, so the
+        // config is taken at its word.
+        let mut s = spec("a");
+        s.builtin = None;
+        s.command = vec!["true".to_string()];
+        s.when = vec!["image".to_string()];
+        let action = Action::from_spec(&s).expect("valid");
+        assert!(action.applies_to(&BTreeSet::from([ContentKind::Image])));
     }
 
     #[test]
@@ -493,6 +551,9 @@ mod tests {
     #[test]
     fn when_restricts_the_action() {
         let mut s = spec("a");
+        // A command, so `when` alone decides where it is offered.
+        s.builtin = None;
+        s.command = vec!["true".to_string()];
         s.when = vec!["url".to_string()];
         let action = Action::from_spec(&s).expect("valid");
         assert!(action.applies_to(&BTreeSet::from([ContentKind::Url])));
@@ -584,9 +645,19 @@ mod tests {
 
     #[test]
     fn for_kind_preserves_config_order() {
-        let mut url_only = spec("second");
-        url_only.when = vec!["url".to_string()];
-        let actions = validate_all(&[spec("first"), url_only, spec("third")]).expect("valid");
+        let command = |id: &str, when: &[&str]| {
+            let mut s = spec(id);
+            s.builtin = None;
+            s.command = vec!["true".to_string()];
+            s.when = when.iter().map(|w| (*w).to_string()).collect();
+            s
+        };
+        let actions = validate_all(&[
+            command("first", &[]),
+            command("second", &["url"]),
+            command("third", &[]),
+        ])
+        .expect("valid");
 
         let offered: Vec<&str> = for_kinds(&actions, &BTreeSet::from([ContentKind::Url]))
             .iter()

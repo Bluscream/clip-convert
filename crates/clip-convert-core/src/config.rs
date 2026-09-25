@@ -585,39 +585,41 @@ mod tests {
         }
     }
 
+    /// The menu a real clipboard would produce, rather than a synthetic set of
+    /// kinds: what an action is offered for depends on the facets actually
+    /// present, and a URL is text as well as a URL.
+    fn menu_for(clip: &crate::content::Clip) -> Vec<String> {
+        let actions = Config::default().validate().expect("valid");
+        crate::action::for_kinds(&actions, &clip.kinds())
+            .iter()
+            .map(|a| a.id.clone())
+            .collect()
+    }
+
     #[test]
     fn the_factory_url_menu_is_the_documented_set() {
-        let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> =
-            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Url]))
-                .iter()
-                .map(|a| a.id.as_str())
-                .collect();
+        let clip = crate::content::Clip::from_text("https://example.com/a").expect("non-empty");
         // Convert is absent: nothing in the factory table turns a URL into
         // anything else.
-        assert_eq!(ids, ["type", "shorten", "split", "truncate", "replace"]);
+        assert_eq!(
+            menu_for(&clip),
+            ["type", "shorten", "split", "truncate", "replace"]
+        );
     }
 
     #[test]
     fn the_factory_image_menu_is_the_documented_set() {
-        let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> =
-            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Image]))
-                .iter()
-                .map(|a| a.id.as_str())
-                .collect();
-        assert_eq!(ids, ["type", "resize", "convert"]);
+        let clip = crate::content::Clip::from_image("image/png".to_string(), vec![1, 2, 3])
+            .expect("non-empty");
+        // No text actions: an image has no text form, so offering them could
+        // only produce an error box.
+        assert_eq!(menu_for(&clip), ["resize", "convert"]);
     }
 
     #[test]
     fn shorten_is_not_offered_for_plain_text() {
-        let actions = Config::default().validate().expect("valid");
-        let ids: Vec<&str> =
-            crate::action::for_kinds(&actions, &BTreeSet::from([ContentKind::Text]))
-                .iter()
-                .map(|a| a.id.as_str())
-                .collect();
-        assert_eq!(ids, ["type", "split", "truncate", "replace"]);
+        let clip = crate::content::Clip::from_text("some words").expect("non-empty");
+        assert_eq!(menu_for(&clip), ["type", "split", "truncate", "replace"]);
     }
 
     #[test]

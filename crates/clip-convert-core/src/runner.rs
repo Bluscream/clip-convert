@@ -54,7 +54,7 @@ pub struct Outcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
-    #[error("there is nothing to type: the clipboard holds an image")]
+    #[error("there is no text on the clipboard to work with")]
     NotTextual,
     #[error("`{label}` does not apply to this clipboard content")]
     WrongKind { label: String },
@@ -725,12 +725,16 @@ mod tests {
     }
 
     #[test]
-    fn typing_an_image_reports_that_there_is_nothing_to_type() {
+    fn typing_an_image_is_refused_before_it_starts() {
+        // The menu no longer offers it, but a stale default action still can,
+        // and the refusal must name the action rather than fail obscurely.
         let action = builtin_action(Builtin::Type, &["any"]);
         let clip = Clip::from_image("image/png".to_string(), vec![1, 2, 3]).expect("non-empty");
         let err = run(&action, &clip, &Config::default(), &cancels()).expect_err("no text");
-        assert!(matches!(err, RunError::NotTextual), "{err:?}");
-        assert!(err.to_string().contains("nothing to type"), "{err}");
+        match err {
+            RunError::WrongKind { label } => assert_eq!(label, "A"),
+            other => panic!("expected WrongKind, got {other:?}"),
+        }
     }
 
     #[test]
