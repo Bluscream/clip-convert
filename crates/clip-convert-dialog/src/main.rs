@@ -12,6 +12,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod ui;
+mod widgets;
 
 use anyhow::{Context, Result};
 use clipconv::protocol::{Answer, Ask, Reply, Request, WindowSize};
@@ -106,7 +107,7 @@ struct Dialog {
     state: ui::State,
     outcome: Arc<Mutex<Option<Reply>>>,
     size: Arc<Mutex<Option<WindowSize>>>,
-    icons: ui::Icons,
+    icons: widgets::Icons,
 }
 
 impl Dialog {
@@ -120,7 +121,7 @@ impl Dialog {
             request,
             outcome,
             size,
-            icons: ui::Icons::default(),
+            icons: widgets::Icons::default(),
         }
     }
 

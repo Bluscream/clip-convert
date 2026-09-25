@@ -24,6 +24,8 @@ pub trait Prompt {
     fn ask_limit(&self, title: &str, message: &str, default: usize) -> Option<usize>;
     /// Asks which size target to resize to.
     fn ask_resize_target(&self, presets: &[Preset]) -> Option<Preset>;
+    /// Asks how to re-encode video: any of width, height, size and length.
+    fn ask_video_target(&self, subject: &str) -> Option<crate::video::VideoTarget>;
     /// Asks which format to convert to, given what the content already is.
     fn ask_conversion(
         &self,
@@ -78,6 +80,8 @@ pub enum RunError {
     NothingToConvert,
     #[error(transparent)]
     Convert(#[from] crate::convert::ConvertError),
+    #[error(transparent)]
+    Video(#[from] crate::video::VideoError),
     #[error("none of the {total} files could be processed. {first}")]
     BatchFailed { total: usize, first: String },
 }
@@ -262,6 +266,13 @@ fn run_resize(
     config: &Config,
     prompt: &dyn Prompt,
 ) -> Result<Option<Outcome>, RunError> {
+    // Video is a different question — length and bitrate, not a sticker
+    // preset — so it gets its own form rather than a preset list that would
+    // mean nothing for it.
+    if clip.kinds().contains(&crate::content::ContentKind::Video) {
+        return run_video_resize(clip, config, prompt);
+    }
+
     let Some(target) = prompt.ask_resize_target(&config.presets) else {
         return Ok(None);
     };
@@ -280,6 +291,48 @@ fn run_resize(
     let batch = crate::batch::resize_batch(files, &target)?;
     clipboard::write_files(&batch.written)?;
     Ok(Some(batch.into_outcome(&target)))
+}
+
+/// Re-encodes a selection of videos to whatever the user asked for.
+fn run_video_resize(
+    clip: &Clip,
+    config: &Config,
+    prompt: &dyn Prompt,
+) -> Result<Option<Outcome>, RunError> {
+    let files = clip.files().ok_or_else(|| RunError::WrongKind {
+        label: "Resize".to_string(),
+    })?;
+
+    let subject = format!(
+        "{} {}",
+        files.len(),
+        clip.noun_for(crate::content::ContentKind::Video)
+            .to_lowercase()
+    );
+    let Some(target) = prompt.ask_video_target(&subject) else {
+        return Ok(None);
+    };
+    if target.constrains_nothing() {
+        return Ok(None);
+    }
+
+    let batch = crate::batch::video_batch(files, &target, &config.video)?;
+    clipboard::write_files(&batch.written)?;
+
+    let mut outcome = batch.into_outcome(&Preset {
+        id: "video".to_string(),
+        label: target.summary(),
+        width: 0,
+        height: 0,
+        max_bytes: 0,
+        format: None,
+        fit: crate::presets::Fit::Inside,
+        icon: None,
+        button_color: None,
+        text_color: None,
+    });
+    outcome.message = outcome.message.replace("Resized", "Re-encoded");
+    Ok(Some(outcome))
 }
 
 /// Asks what to convert to, then does it.
@@ -468,6 +521,7 @@ mod tests {
         target: Option<Preset>,
         replacement: Option<crate::replace::Replacement>,
         conversion: Option<String>,
+        video: Option<crate::video::VideoTarget>,
     }
 
     impl Prompt for Canned {
@@ -483,6 +537,9 @@ mod tests {
         fn ask_conversion(&self, _: &str, _: &[crate::protocol::ActionEntry]) -> Option<String> {
             self.conversion.clone()
         }
+        fn ask_video_target(&self, _: &str) -> Option<crate::video::VideoTarget> {
+            self.video.clone()
+        }
     }
 
     fn cancels() -> Canned {
@@ -491,6 +548,7 @@ mod tests {
             target: None,
             replacement: None,
             conversion: None,
+            video: None,
         }
     }
 
@@ -535,6 +593,7 @@ mod tests {
             target: Some(preset),
             replacement: None,
             conversion: None,
+            video: None,
         }
     }
 
@@ -548,6 +607,7 @@ mod tests {
                 replacement: with.to_string(),
             }),
             conversion: None,
+            video: None,
         }
     }
 

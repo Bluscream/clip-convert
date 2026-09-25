@@ -436,6 +436,42 @@ pub fn human_bytes(bytes: usize) -> String {
     }
 }
 
+/// Reads a size written the way people write sizes: `10mb`, `1.5 GB`, `512k`,
+/// or a plain number of bytes.
+///
+/// The binary meaning is used throughout — `1 KB` is 1024 bytes — because that
+/// is what [`human_bytes`] prints, and a value that does not round-trip
+/// through its own display is a trap.
+#[must_use]
+pub fn parse_bytes(text: &str) -> Option<u64> {
+    let text = text.trim().to_ascii_lowercase();
+    let digits: String = text
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+
+    let value: f64 = digits.parse().ok()?;
+    let multiplier = match text[digits.len()..].trim().trim_end_matches('b').trim() {
+        "" => 1.0,
+        "k" => 1024.0,
+        "m" => 1024.0 * 1024.0,
+        "g" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+
+    let bytes = value * multiplier;
+    if !bytes.is_finite() || bytes < 1.0 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // Guarded above; anything beyond u64 saturates, which is not a size anyone
+    // is asking for.
+    Some(bytes as u64)
+}
+
 /// Groups digits so long character counts stay readable at a glance.
 fn thousands(n: usize) -> String {
     let digits = n.to_string();
@@ -447,6 +483,41 @@ fn thousands(n: usize) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::{human_bytes, parse_bytes};
+
+    #[test]
+    fn a_size_can_be_written_the_ways_people_write_sizes() {
+        assert_eq!(parse_bytes("10mb"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_bytes("10 MB"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_bytes("10m"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_bytes("512k"), Some(512 * 1024));
+        assert_eq!(parse_bytes("1.5gb"), Some(1024 * 1024 * 1024 * 3 / 2));
+        assert_eq!(parse_bytes("2048"), Some(2048));
+    }
+
+    #[test]
+    fn a_size_that_is_not_a_size_is_rejected() {
+        for bad in ["", "mb", "lots", "10tb", "-5", "0"] {
+            assert_eq!(parse_bytes(bad), None, "{bad} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_printed_size_can_be_read_back() {
+        // A value that does not survive its own display is a trap.
+        for bytes in [512_usize, 10 * 1024, 5 * 1024 * 1024] {
+            let printed = human_bytes(bytes);
+            assert_eq!(
+                parse_bytes(&printed),
+                Some(bytes as u64),
+                "{printed} did not round-trip"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

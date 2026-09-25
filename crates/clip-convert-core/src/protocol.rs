@@ -96,7 +96,8 @@ pub struct ActionEntry {
 }
 
 /// What the daemon wants shown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Not `Eq`: a video target carries a length in seconds, which is a float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "dialog", rename_all = "snake_case")]
 pub enum Request {
     /// The action menu for the current clipboard content.
@@ -130,6 +131,11 @@ pub enum Request {
     },
     /// Which size target to resize an image to.
     AskResizeTarget { presets: Vec<Preset> },
+    /// How to re-encode a video: any of width, height, size and length.
+    AskVideoTarget {
+        /// What is being resized, for the heading, e.g. `3 videos`.
+        subject: String,
+    },
     /// A failure the user needs to see.
     ShowError { message: String },
 }
@@ -148,6 +154,7 @@ impl Request {
             Self::AskConversion { .. } => "convert",
             Self::AskReplace { .. } => "replace",
             Self::AskResizeTarget { .. } => "resize",
+            Self::AskVideoTarget { .. } => "video",
             Self::ShowError { .. } => "error",
         }
     }
@@ -161,6 +168,7 @@ impl Request {
             Self::AskConversion { .. } => "Convert to",
             Self::AskReplace { .. } => "Find and replace",
             Self::AskResizeTarget { .. } => "Resize image",
+            Self::AskVideoTarget { .. } => "Resize video",
             Self::ShowError { .. } => "Something went wrong",
         }
     }
@@ -179,7 +187,7 @@ pub struct ActionChoice {
 ///
 /// [`Self::Cancelled`] is an ordinary outcome, not a failure: the user pressed
 /// Escape or closed the window.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum Reply {
     // Struct variants throughout: an internally tagged enum cannot serialise a
@@ -199,6 +207,9 @@ pub enum Reply {
     /// The `id` of the chosen conversion.
     Conversion {
         conversion_id: String,
+    },
+    VideoTarget {
+        target: crate::video::VideoTarget,
     },
     /// The dialog was shown and acknowledged, with nothing to report.
     Acknowledged,
@@ -235,6 +246,9 @@ mod tests {
                 title: "Split".to_string(),
                 message: "How many?".to_string(),
                 default: 2000,
+            },
+            Request::AskVideoTarget {
+                subject: "3 videos".to_string(),
             },
             Request::AskConversion {
                 source: "PNG".to_string(),
@@ -283,6 +297,14 @@ mod tests {
             },
             Reply::Conversion {
                 conversion_id: "to-ico".to_string(),
+            },
+            Reply::VideoTarget {
+                target: crate::video::VideoTarget {
+                    width: Some(1280),
+                    height: None,
+                    max_bytes: Some(10 * 1024 * 1024),
+                    seconds: Some(30.0),
+                },
             },
             Reply::Acknowledged,
             Reply::Cancelled,
@@ -340,6 +362,10 @@ mod tests {
             Request::AskConversion {
                 source: String::new(),
                 options: Vec::new(),
+            }
+            .size_key(),
+            Request::AskVideoTarget {
+                subject: String::new(),
             }
             .size_key(),
             Request::AskReplace {

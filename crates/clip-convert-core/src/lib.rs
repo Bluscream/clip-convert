@@ -26,3 +26,4 @@ pub mod scratch;
 pub mod shorten;
 pub mod text;
 pub mod typing;
+pub mod video;

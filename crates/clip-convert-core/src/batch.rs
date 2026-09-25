@@ -12,6 +12,7 @@
 use crate::convert;
 use crate::presets::Preset;
 use crate::runner::{Outcome, RunError, COMMAND_TIMEOUT};
+use crate::video::{self, VideoSettings, VideoTarget};
 use crate::{exec, image, scratch};
 use std::path::{Path, PathBuf};
 
@@ -236,4 +237,135 @@ fn file_label(path: &std::path::Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("a file")
         .to_string()
+}
+
+/// How long one video may take to re-encode.
+///
+/// Far longer than a conversion: this is real work on a real file, and a
+/// minute-long clip at a size cap can take a while.
+const ENCODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Re-encodes every video, writing the results into a scratch directory.
+///
+/// As elsewhere, one failure does not abandon the rest.
+pub(crate) fn video_batch(
+    files: &[PathBuf],
+    target: &VideoTarget,
+    settings: &VideoSettings,
+) -> Result<Batch, RunError> {
+    let directory = scratch::output_dir("video").map_err(RunError::TempFile)?;
+
+    let mut written = Vec::new();
+    let mut failures = Vec::new();
+
+    for source in files {
+        match encode_one(source, target, settings, &directory) {
+            Ok(path) => written.push(path),
+            Err(e) => {
+                log::warn!("re-encoding {} failed: {e}", source.display());
+                failures.push(format!("{}: {e}", file_label(source)));
+            }
+        }
+    }
+
+    if written.is_empty() {
+        return Err(RunError::BatchFailed {
+            total: files.len(),
+            first: failures.into_iter().next().unwrap_or_default(),
+        });
+    }
+
+    Ok(Batch {
+        written,
+        failures,
+        total: files.len(),
+    })
+}
+
+/// Re-encodes one video, returning where the result was written.
+fn encode_one(
+    source: &Path,
+    target: &VideoTarget,
+    settings: &VideoSettings,
+    directory: &Path,
+) -> Result<PathBuf, RunError> {
+    // Only asked when it is needed: probing costs a process, and a target
+    // without a size cap does not care how long the video runs.
+    let duration = if target.max_bytes.is_some() {
+        probe_duration(source, settings)
+    } else {
+        None
+    };
+
+    let output = directory.join(scratch::output_name(source, "resized", &settings.container));
+    let args = video::encode_args(settings, source, &output, target, duration)?;
+
+    exec::run(&args, None, ENCODE_TIMEOUT)?;
+    if !output.is_file() {
+        return Err(RunError::BatchFailed {
+            total: 1,
+            first: format!("{} produced no output", settings.ffmpeg),
+        });
+    }
+    Ok(output)
+}
+
+/// How long a video runs, or `None` if it could not be read.
+fn probe_duration(source: &Path, settings: &VideoSettings) -> Option<f64> {
+    let args = video::probe_args(settings, source);
+    match exec::run(&args, None, ENCODE_TIMEOUT) {
+        Ok(output) => video::parse_duration(&output.stdout_text()),
+        Err(e) => {
+            log::warn!("could not read the length of {}: {e}", source.display());
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Re-encodes a real video with the real encoder.
+    ///
+    /// Ignored by default because it needs `ffmpeg` and `ffprobe` installed
+    /// and takes a second or two; run it with
+    /// `cargo test -p clip-convert-core -- --ignored` after touching anything
+    /// that builds the encoder's arguments.
+    #[test]
+    #[ignore = "needs ffmpeg installed"]
+    fn a_real_video_is_re_encoded_within_its_size_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mp4");
+
+        // Ten seconds of test pattern, deliberately larger than the cap.
+        let made = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1280x720:rate=30:duration=10",
+                "-c:v",
+                "libx264",
+                "-b:v",
+                "4000k",
+                source.to_str().expect("utf-8"),
+            ])
+            .output()
+            .expect("ffmpeg runs");
+        assert!(made.status.success(), "could not make the fixture");
+
+        let target = VideoTarget {
+            width: Some(640),
+            height: None,
+            max_bytes: Some(512 * 1024),
+            seconds: None,
+        };
+        let batch = video_batch(&[source], &target, &VideoSettings::default()).expect("encodes");
+
+        assert_eq!(batch.written.len(), 1);
+        let size = std::fs::metadata(&batch.written[0]).expect("written").len();
+        assert!(size <= 512 * 1024, "the size cap was not met: {size} bytes");
+    }
 }

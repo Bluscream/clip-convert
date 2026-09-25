@@ -125,8 +125,9 @@ impl Builtin {
         match self {
             Self::Type | Self::Split | Self::Truncate | Self::Replace => Some(ContentKind::Text),
             Self::Shorten => Some(ContentKind::Url),
-            Self::Resize => Some(ContentKind::Image),
-            Self::Convert => None,
+            // Resize and Convert have no one subject: both work on images and
+            // on video, and the label takes the most specific kind present.
+            Self::Resize | Self::Convert => None,
         }
     }
 }

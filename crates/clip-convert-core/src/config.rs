@@ -194,6 +194,8 @@ pub struct Config {
     #[serde(default)]
     pub replace: ReplaceSettings,
     #[serde(default)]
+    pub video: crate::video::VideoSettings,
+    #[serde(default)]
     pub commands: Commands,
     #[serde(default)]
     pub shorteners: Vec<Shortener>,
@@ -241,6 +243,7 @@ impl Default for Config {
             split: SplitSettings::default(),
             truncate: TruncateSettings::default(),
             replace: ReplaceSettings::default(),
+            video: crate::video::VideoSettings::default(),
             commands: Commands::default(),
             shorteners: Vec::new(),
             presets: presets::factory(),
@@ -281,7 +284,7 @@ pub fn factory_actions() -> Vec<ActionSpec> {
             &["text", "url", "html"],
             Builtin::Replace,
         ),
-        builtin("resize", "Resize", &["image"], Builtin::Resize),
+        builtin("resize", "Resize", &["image", "video"], Builtin::Resize),
         builtin(
             "convert",
             "Convert",

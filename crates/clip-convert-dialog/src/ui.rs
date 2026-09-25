@@ -4,9 +4,12 @@
 //! come from the config file, so the menu is a loop over data rather than a set
 //! of widgets that have to be built, bound and torn down.
 
+use crate::widgets::{
+    color, heading, history_field, icon_button, wide_button, Icons, Style, BUTTON_HEIGHT,
+    BUTTON_TEXT,
+};
 use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
-use std::collections::HashMap;
 
 /// Width of a dialog, in logical points.
 const DIALOG_WIDTH: f32 = 460.0;
@@ -17,29 +20,12 @@ const WIDE_DIALOG_WIDTH: f32 = 680.0;
 /// How many columns the resize chooser uses.
 const PRESET_COLUMNS: usize = 2;
 
-/// Edge length of a button's icon, in logical points.
-const ICON_SIZE: f32 = 28.0;
-
-/// Gap between an icon and the label beside it.
-const ICON_GAP: f32 = 12.0;
-
-/// Breathing room inside a button, either side of its contents.
-const BUTTON_PADDING: f32 = 14.0;
-
 /// Size of a preset's name.
 const PRESET_TITLE: f32 = 15.0;
 
 /// Size of the limits line under a preset's name. Deliberately smaller: it is
 /// reference information, not the thing being chosen.
 const PRESET_SUBTITLE: f32 = 11.5;
-
-/// Minimum height of an action button. Deliberately large: these are the
-/// primary targets, hit immediately after a hotkey, often without looking
-/// closely. A button grows past this when its label needs two lines.
-const BUTTON_HEIGHT: f32 = 58.0;
-
-/// Size of the text on an action button.
-const BUTTON_TEXT: f32 = 18.0;
 
 /// Gap between action buttons.
 const BUTTON_GAP: f32 = 12.0;
@@ -54,7 +40,48 @@ pub enum State {
     AskResizeTarget { custom: Option<CustomSize> },
     AskReplace { fields: ReplaceFields },
     AskConversion,
+    AskVideoTarget { fields: VideoFields },
     ShowError,
+}
+
+/// The fields of the video form. All optional: what is left blank is left
+/// alone, which is the point of the dialog.
+#[derive(Default)]
+pub struct VideoFields {
+    pub width: String,
+    pub height: String,
+    pub max_size: String,
+    pub length: String,
+}
+
+impl VideoFields {
+    /// What was typed, as a target. `None` when something was typed that does
+    /// not read as a number, so the dialog can say so rather than drop it.
+    fn parse(&self) -> Option<clipconv::video::VideoTarget> {
+        let pixels = |text: &str| -> Option<Option<u32>> {
+            if text.trim().is_empty() {
+                return Some(None);
+            }
+            text.trim().parse::<u32>().ok().filter(|v| *v > 0).map(Some)
+        };
+        let optional = |text: &str, parse: &dyn Fn(&str) -> Option<f64>| -> Option<Option<f64>> {
+            if text.trim().is_empty() {
+                return Some(None);
+            }
+            parse(text).map(Some)
+        };
+
+        Some(clipconv::video::VideoTarget {
+            width: pixels(&self.width)?,
+            height: pixels(&self.height)?,
+            max_bytes: if self.max_size.trim().is_empty() {
+                None
+            } else {
+                Some(clipconv::content::parse_bytes(&self.max_size)?)
+            },
+            seconds: optional(&self.length, &|text| clipconv::video::parse_seconds(text))?,
+        })
+    }
 }
 
 /// The fields of the find-and-replace form.
@@ -77,6 +104,9 @@ impl State {
             },
             Request::AskResizeTarget { .. } => Self::AskResizeTarget { custom: None },
             Request::AskConversion { .. } => Self::AskConversion,
+            Request::AskVideoTarget { .. } => Self::AskVideoTarget {
+                fields: VideoFields::default(),
+            },
             // Pre-filled with the last pattern used: repeating the previous
             // replacement on a new piece of text is the common case.
             Request::AskReplace {
@@ -134,6 +164,7 @@ pub fn window_height(request: &Request) -> f32 {
         }
         Request::AskLimit { .. } => 200.0,
         Request::AskReplace { .. } => 260.0,
+        Request::AskVideoTarget { .. } => 330.0,
         Request::AskConversion { options, .. } => {
             #[allow(clippy::cast_precision_loss)] // Never enough entries to matter.
             let rows = options.len() as f32;
@@ -149,170 +180,6 @@ pub fn window_height(request: &Request) -> f32 {
             rows.mul_add(BUTTON_HEIGHT + BUTTON_GAP, 120.0).min(720.0)
         }
         Request::ShowError { .. } => 230.0,
-    }
-}
-
-/// Decoded icons, kept for the life of the dialog.
-///
-/// A texture must be uploaded once and reused: decoding and uploading on every
-/// frame would make redrawing far more expensive than it needs to be.
-#[derive(Default)]
-pub struct Icons {
-    textures: HashMap<String, Option<egui::TextureHandle>>,
-}
-
-impl Icons {
-    /// The texture for a base64 icon, decoding it the first time it is needed.
-    ///
-    /// A failure is cached too, so a broken icon is not retried every frame.
-    fn get(
-        &mut self,
-        ctx: &egui::Context,
-        key: &str,
-        encoded: &str,
-    ) -> Option<egui::TextureHandle> {
-        if let Some(cached) = self.textures.get(key) {
-            return cached.clone();
-        }
-
-        let handle = clipconv::icons::decode(encoded)
-            .and_then(|bytes| image::load_from_memory(&bytes).ok())
-            .map(|decoded| {
-                let rgba = decoded.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                ctx.load_texture(key, image, egui::TextureOptions::LINEAR)
-            });
-
-        if handle.is_none() {
-            log::warn!("could not decode the icon for `{key}`");
-        }
-        self.textures.insert(key.to_string(), handle.clone());
-        handle
-    }
-}
-
-/// A configured colour, if it was set and understood.
-///
-/// Anything unparseable was already rejected when the config loaded, so a
-/// `None` here means the entry simply did not set one.
-fn color(raw: Option<&String>) -> Option<egui::Color32> {
-    let [r, g, b, a] = clipconv::color::parse(raw?)?;
-    Some(egui::Color32::from_rgba_unmultiplied(r, g, b, a))
-}
-
-/// A custom fill, adjusted so it still reacts to the pointer.
-///
-/// A flat colour painted regardless of state loses the hover and press
-/// feedback every other control has, which makes a coloured button feel dead.
-fn interactive(fill: egui::Color32, response: &egui::Response) -> egui::Color32 {
-    if response.is_pointer_button_down_on() {
-        fill.gamma_multiply(0.8)
-    } else if response.hovered() {
-        fill.gamma_multiply(1.2)
-    } else {
-        fill
-    }
-}
-
-/// A button with an optional icon to the left of its text, the pair centred.
-///
-/// Drawn rather than composed from `Button::image_and_text`, which aligns its
-/// contents to the left edge. Centring the icon and label as one group is what
-/// keeps a menu of mixed entries — some with icons, some without — looking like
-/// one list, and painting it directly is also what lets an entry carry its own
-/// colour without losing the hover and press states.
-fn icon_button(
-    ui: &mut egui::Ui,
-    icons: &mut Icons,
-    key: &str,
-    style: Style<'_>,
-    text: impl Into<egui::WidgetText>,
-) -> egui::Response {
-    let texture = style
-        .icon
-        .and_then(|encoded| icons.get(ui.ctx(), key, encoded));
-    let width = ui.available_width();
-
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, BUTTON_HEIGHT), egui::Sense::click());
-
-    // The label has to fit in what is left once the icon and its gap are taken.
-    let icon_space = if texture.is_some() {
-        ICON_SIZE + ICON_GAP
-    } else {
-        0.0
-    };
-    let text_limit = (width - icon_space - BUTTON_PADDING * 2.0).max(1.0);
-    let galley = text.into().into_galley(
-        ui,
-        Some(egui::TextWrapMode::Wrap),
-        text_limit,
-        egui::TextStyle::Button,
-    );
-
-    if ui.is_rect_visible(rect) {
-        // Painted with the same visuals a real button would use, so it responds
-        // to hover and focus like every other control.
-        let visuals = ui.style().interact(&response);
-        let fill = color(style.button_color)
-            .map_or(visuals.weak_bg_fill, |fill| interactive(fill, &response));
-        ui.painter().rect(
-            rect.expand(visuals.expansion),
-            visuals.rounding,
-            fill,
-            visuals.bg_stroke,
-        );
-
-        let group_width = icon_space + galley.size().x;
-        let left = rect.center().x - group_width / 2.0;
-
-        if let Some(texture) = texture {
-            let icon_rect = egui::Rect::from_min_size(
-                egui::pos2(left, rect.center().y - ICON_SIZE / 2.0),
-                egui::vec2(ICON_SIZE, ICON_SIZE),
-            );
-            // White tint means "draw it as it is"; egui would otherwise recolour
-            // the icon to match the label and flatten a colourful one.
-            egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture))
-                .tint(egui::Color32::WHITE)
-                .paint_at(ui, icon_rect);
-        }
-
-        let text_pos = egui::pos2(left + icon_space, rect.center().y - galley.size().y / 2.0);
-        // A galley that set no colour of its own is painted in this one, so a
-        // configured text colour reaches a plain label without the caller
-        // having to build it differently.
-        let text_color = color(style.text_color).unwrap_or_else(|| visuals.text_color());
-        ui.painter().galley(text_pos, galley, text_color);
-    }
-
-    response
-}
-
-/// What an entry looks like: its icon and its own colours, if it set any.
-#[derive(Clone, Copy, Default)]
-pub struct Style<'a> {
-    pub icon: Option<&'a str>,
-    pub button_color: Option<&'a String>,
-    pub text_color: Option<&'a String>,
-}
-
-impl<'a> Style<'a> {
-    fn for_action(action: &'a ActionEntry) -> Self {
-        Self {
-            icon: action.icon.as_deref(),
-            button_color: action.button_color.as_ref(),
-            text_color: action.text_color.as_ref(),
-        }
-    }
-
-    fn for_preset(preset: &'a Preset) -> Self {
-        Self {
-            icon: preset.icon.as_deref(),
-            button_color: preset.button_color.as_ref(),
-            text_color: preset.text_color.as_ref(),
-        }
     }
 }
 
@@ -353,6 +220,9 @@ pub fn show(
                 (Request::AskConversion { source, options }, State::AskConversion) => {
                     ask_conversion(ui, source, options, icons)
                 }
+                (Request::AskVideoTarget { subject }, State::AskVideoTarget { fields }) => {
+                    ask_video_target(ui, subject, fields)
+                }
                 (Request::ShowError { message }, State::ShowError) => show_error(ui, message),
                 // The state is always built from the request, so this cannot
                 // happen; dismissing is the safe answer if it ever did.
@@ -366,17 +236,6 @@ pub fn show(
         return Some(Reply::Cancelled);
     }
     reply
-}
-
-/// A full-width button sized for quick, confident clicking.
-///
-/// `add_sized` rather than `min_size`, because only the former centres the
-/// label; a button given a minimum size draws its text against the left edge.
-/// Wrapping is on so a long label from a custom action folds onto a second line
-/// instead of running off the edge.
-fn wide_button(ui: &mut egui::Ui, icons: &mut Icons, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label).size(BUTTON_TEXT).strong();
-    icon_button(ui, icons, label, Style::default(), text)
 }
 
 /// One preset: its name, with the limits it encodes underneath in smaller,
@@ -411,12 +270,6 @@ fn preset_button(ui: &mut egui::Ui, icons: &mut Icons, preset: &Preset) -> egui:
     );
 
     icon_button(ui, icons, &preset.id, Style::for_preset(preset), text)
-}
-
-/// A bold line summarising what is on the clipboard.
-fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(15.0).strong());
-    ui.add_space(14.0);
 }
 
 fn choose_action(
@@ -632,37 +485,64 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
     reply
 }
 
-/// Width of the "Recent" picker beside a history field.
-const PICKER_WIDTH: f32 = 96.0;
+fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) -> Option<Reply> {
+    heading(ui, &format!("Re-encode {subject} to fit:"));
 
-/// A text field with the values used before offered beside it.
-///
-/// A plain dropdown cannot take a new value and a plain field cannot offer an
-/// old one, so this is both: type anything, or pick something typed before.
-/// The picker is disabled rather than hidden when there is no history, so the
-/// field does not change width the first time the action is used.
-fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &[String]) {
-    ui.horizontal(|ui| {
-        let field_width =
-            (ui.available_width() - PICKER_WIDTH - ui.spacing().item_spacing.x).max(PICKER_WIDTH);
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .desired_width(field_width)
-                .font(egui::TextStyle::Monospace),
-        );
-        ui.add_enabled_ui(!history.is_empty(), |ui| {
-            egui::ComboBox::from_id_salt(id)
-                .width(PICKER_WIDTH)
-                .selected_text("Recent")
-                .show_ui(ui, |ui| {
-                    for past in history {
-                        if ui.selectable_label(past == value, past).clicked() {
-                            value.clone_from(past);
-                        }
-                    }
-                });
+    let row = |ui: &mut egui::Ui, caption: &str, hint: &str, value: &mut String| {
+        ui.horizontal(|ui| {
+            ui.add_sized([150.0, 24.0], egui::Label::new(caption));
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY),
+            );
         });
+    };
+    row(ui, "Width (px)", "leave blank to keep", &mut fields.width);
+    row(ui, "Height (px)", "leave blank to keep", &mut fields.height);
+    row(ui, "Max file size", "e.g. 10mb", &mut fields.max_size);
+    row(ui, "Length", "e.g. 1:30", &mut fields.length);
+
+    ui.add_space(10.0);
+    let target = fields.parse();
+    match target.as_ref() {
+        None => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "A size reads like `10mb`, and a length like `90`, `1:30` or `1m30s`.",
+            );
+        }
+        Some(target) if target.constrains_nothing() => {
+            ui.label("Fill in at least one; anything left blank is kept as it is.");
+        }
+        Some(target) => {
+            ui.label(format!("Result: {}", target.summary()));
+        }
+    }
+    ui.add_space(14.0);
+
+    let ready = target.as_ref().is_some_and(|t| !t.constrains_nothing());
+    let mut reply = None;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                ready,
+                egui::Button::new("Re-encode").min_size([130.0, 36.0].into()),
+            )
+            .clicked()
+        {
+            if let Some(target) = target {
+                reply = Some(Reply::VideoTarget { target });
+            }
+        }
+        if ui
+            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
+            .clicked()
+        {
+            reply = Some(Reply::Cancelled);
+        }
     });
+    reply
 }
 
 fn ask_conversion(
@@ -819,6 +699,9 @@ mod tests {
                 source: "PNG".to_string(),
                 options: actions(2),
             },
+            Request::AskVideoTarget {
+                subject: "1 video".to_string(),
+            },
             Request::ShowError {
                 message: String::new(),
             },
@@ -836,6 +719,7 @@ mod tests {
                     )
                     | (Request::AskReplace { .. }, State::AskReplace { .. })
                     | (Request::AskConversion { .. }, State::AskConversion)
+                    | (Request::AskVideoTarget { .. }, State::AskVideoTarget { .. })
                     | (Request::ShowError { .. }, State::ShowError)
             );
             assert!(paired, "{request:?} did not pair with its state");
@@ -868,6 +752,37 @@ mod tests {
                 _ => panic!("wrong state"),
             }
         }
+    }
+
+    #[test]
+    fn an_empty_video_form_asks_for_nothing_rather_than_failing_to_parse() {
+        let fields = VideoFields::default();
+        let target = fields.parse().expect("blank is valid, just empty");
+        assert!(target.constrains_nothing());
+    }
+
+    #[test]
+    fn the_video_form_reads_sizes_and_lengths_as_people_write_them() {
+        let fields = VideoFields {
+            width: "1280".to_string(),
+            height: String::new(),
+            max_size: "10mb".to_string(),
+            length: "1:30".to_string(),
+        };
+        let target = fields.parse().expect("all readable");
+        assert_eq!(target.width, Some(1280));
+        assert_eq!(target.height, None);
+        assert_eq!(target.max_bytes, Some(10 * 1024 * 1024));
+        assert_eq!(target.seconds, Some(90.0));
+    }
+
+    #[test]
+    fn a_field_that_does_not_read_as_a_number_is_reported_not_dropped() {
+        let fields = VideoFields {
+            max_size: "lots".to_string(),
+            ..VideoFields::default()
+        };
+        assert!(fields.parse().is_none());
     }
 
     #[test]

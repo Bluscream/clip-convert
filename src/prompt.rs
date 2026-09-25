@@ -14,6 +14,7 @@ use clipconv::presets::Preset;
 use clipconv::protocol::{ActionChoice, ActionEntry, Answer, Ask, Reply, Request, WindowSize};
 use clipconv::replace::Replacement;
 use clipconv::runner::Prompt;
+use clipconv::video::VideoTarget;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -174,6 +175,15 @@ impl Prompt for Prompter {
             presets: presets.to_vec(),
         }) {
             Reply::ResizeTarget { preset } => Some(*preset),
+            _ => None,
+        }
+    }
+
+    fn ask_video_target(&self, subject: &str) -> Option<VideoTarget> {
+        match self.ask(&Request::AskVideoTarget {
+            subject: subject.to_string(),
+        }) {
+            Reply::VideoTarget { target } => Some(target),
             _ => None,
         }
     }
@@ -378,6 +388,18 @@ mod tests {
                 height: 500
             })
         );
+    }
+
+    #[test]
+    fn a_video_target_comes_back_with_only_the_fields_that_were_set() {
+        let prompter = stub(
+            r#"echo '{"reply":{"reply":"video_target","target":{"width":1280,"max_bytes":10485760}}}'"#,
+        );
+        let target = prompter.ask_video_target("1 video").expect("a target");
+        assert_eq!(target.width, Some(1280));
+        assert_eq!(target.max_bytes, Some(10 * 1024 * 1024));
+        assert_eq!(target.height, None, "an unset field must stay unset");
+        assert_eq!(target.seconds, None);
     }
 
     #[test]
