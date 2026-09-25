@@ -25,8 +25,9 @@ workstation unusable. Override with LCC_JOBS and LCC_NICE.
               session and about 30 seconds.
   -h, --help  Show this message.
 
-Steps: size limits -> format check -> clippy (pedantic, warnings are errors)
--> tests -> docs -> build.
+Steps: format check -> clippy (pedantic, warnings are errors) -> tests ->
+docs -> build. The file and function size limits are enforced by the test
+suite, in tests/source_size.rs.
 USAGE
 }
 
@@ -58,9 +59,6 @@ cd "$PROJECT_DIR"
 # seconds, rather than paying for a container round-trip.
 CARGO_BUILD_JOBS="$JOBS" nice -n "$NICE" \
     cargo test -p clip-convert-core --no-default-features
-
-echo "==> size limits"
-"$PROJECT_DIR/scripts/limits.sh"
 
 echo "==> format"
 in_container "cargo fmt --all --check"
