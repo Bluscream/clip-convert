@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "clip-convert"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clip-convert-core",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "clip-convert-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "base64",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "clip-convert-dialog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clip-convert-core",
