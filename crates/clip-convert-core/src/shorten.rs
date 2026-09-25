@@ -123,19 +123,7 @@ pub fn is_already_short(url: &Url, shorteners: &[&Shortener]) -> bool {
 }
 
 fn agent(ignore_ssl: bool) -> ureq::Agent {
-    let mut builder = ureq::builder();
-
-    if ignore_ssl {
-        let mut tls = native_tls::TlsConnector::builder();
-        tls.danger_accept_invalid_certs(true);
-        tls.danger_accept_invalid_hostnames(true);
-        match tls.build() {
-            Ok(connector) => builder = builder.tls_connector(std::sync::Arc::new(connector)),
-            Err(e) => log::warn!("could not build a permissive TLS connector: {e}"),
-        }
-    }
-
-    builder.build()
+    crate::http::agent(ignore_ssl, TIMEOUT)
 }
 
 #[cfg(test)]

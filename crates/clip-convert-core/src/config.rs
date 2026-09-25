@@ -266,7 +266,9 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         input: InputMode::default(),
         output: OutputMode::default(),
         enabled: true,
-        icon: None,
+        // Drawn, not shipped: a file reference would break when the file
+        // moved, and the result is ordinary base64 the user can replace.
+        icon: Some(crate::glyphs::for_builtin(which)),
         button_color: None,
         text_color: None,
     };
@@ -436,12 +438,21 @@ impl Config {
     /// missing picture is not a reason to refuse to start.
     pub fn resolve_icons(&mut self) -> bool {
         let mut changed = false;
+        let ignore_ssl = self.ignore_ssl_errors;
 
         for preset in &mut self.presets {
-            changed |= resolve_icon(&mut preset.icon, "preset", &preset.id);
+            changed |= resolve_icon(&mut preset.icon, "preset", &preset.id, ignore_ssl);
+        }
+        for conversion in &mut self.conversions {
+            changed |= resolve_icon(
+                &mut conversion.icon,
+                "conversion",
+                &conversion.id,
+                ignore_ssl,
+            );
         }
         for action in &mut self.actions {
-            changed |= resolve_icon(&mut action.icon, "action", &action.id);
+            changed |= resolve_icon(&mut action.icon, "action", &action.id, ignore_ssl);
         }
         changed
     }
@@ -454,12 +465,12 @@ impl Config {
 }
 
 /// Resolves one icon field, reporting what happened.
-fn resolve_icon(icon: &mut Option<String>, what: &str, id: &str) -> bool {
+fn resolve_icon(icon: &mut Option<String>, what: &str, id: &str, ignore_ssl: bool) -> bool {
     let Some(raw) = icon.clone() else {
         return false;
     };
 
-    match crate::icons::resolve(&raw) {
+    match crate::icons::resolve(&raw, ignore_ssl) {
         Ok(Some(encoded)) => {
             log::info!("{what} `{id}`: icon converted and cached in the config");
             *icon = Some(encoded);
@@ -467,9 +478,12 @@ fn resolve_icon(icon: &mut Option<String>, what: &str, id: &str) -> bool {
         }
         Ok(None) => false,
         Err(e) => {
-            log::warn!("{what} `{id}`: ignoring its icon: {e}");
-            *icon = None;
-            true
+            // Left in place rather than cleared. A download that failed
+            // because the network was down would otherwise cost the user their
+            // icon permanently, with only a config edit to get it back; this
+            // way it is retried next time the app starts.
+            log::warn!("{what} `{id}`: could not use its icon yet: {e}");
+            false
         }
     }
 }

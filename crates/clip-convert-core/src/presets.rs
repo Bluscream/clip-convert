@@ -84,9 +84,28 @@ impl Preset {
     }
 }
 
-/// The factory presets as plain data: id, label, width, height, max bytes,
-/// format, and whether the canvas size is mandatory.
-const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
+/// Where the factory icons come from: monochrome, transparent brand marks.
+///
+/// SVG, which is rasterised and cached as base64 the first time the config is
+/// loaded, so this address is never visited again.
+const ICONS: &str = "https://cdn.simpleicons.org";
+
+/// One factory preset as plain data: id, label, width, height, max bytes,
+/// format, whether the canvas size is mandatory, and the brand whose mark goes
+/// on the button.
+type FactoryPreset = (
+    &'static str,
+    &'static str,
+    u32,
+    u32,
+    u64,
+    &'static str,
+    Fit,
+    &'static str,
+);
+
+/// The presets a fresh config file is written with.
+const FACTORY: [FactoryPreset; 11] = [
     (
         "discord",
         "Discord sticker",
@@ -95,6 +114,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         512 * 1024,
         "png",
         Fit::Exact,
+        "discord",
     ),
     (
         "telegram",
@@ -104,6 +124,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         512 * 1024,
         "webp",
         Fit::Inside,
+        "telegram",
     ),
     (
         "telegram-icon",
@@ -113,6 +134,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         128 * 1024,
         "png",
         Fit::Exact,
+        "telegram",
     ),
     (
         "signal",
@@ -122,6 +144,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         300 * 1024,
         "png",
         Fit::Exact,
+        "signal",
     ),
     (
         "whatsapp",
@@ -131,6 +154,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         100 * 1024,
         "webp",
         Fit::Exact,
+        "whatsapp",
     ),
     (
         "whatsapp-tray",
@@ -140,6 +164,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         50 * 1024,
         "png",
         Fit::Exact,
+        "whatsapp",
     ),
     (
         "vrchat",
@@ -149,6 +174,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         8 * 1024 * 1024,
         "png",
         Fit::Exact,
+        "vrchat",
     ),
     (
         "slack",
@@ -158,6 +184,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         128 * 1024,
         "png",
         Fit::Inside,
+        "slack",
     ),
     (
         "line",
@@ -167,6 +194,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         1024 * 1024,
         "png",
         Fit::Inside,
+        "line",
     ),
     (
         "matrix",
@@ -176,6 +204,7 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         512 * 1024,
         "webp",
         Fit::Inside,
+        "matrix",
     ),
     // Not a sticker: Discord's plain attachment limit. Caps the file size and
     // changes nothing else — no scaling, no re-encoding to another format.
@@ -187,8 +216,22 @@ const FACTORY: [(&str, &str, u32, u32, u64, &str, Fit); 11] = [
         10 * 1024 * 1024,
         "",
         Fit::Inside,
+        "discord",
     ),
 ];
+
+/// The address of a brand's mark, or `None` for a preset that has no brand.
+///
+/// Slack is not in the icon service's own index any more, so its mark comes
+/// from the same icon set published as a package. That one names no colour, and
+/// is drawn white like the rest.
+fn icon_for(brand: &str) -> Option<String> {
+    match brand {
+        "" => None,
+        "slack" => Some("https://cdn.jsdelivr.net/npm/simple-icons@11/icons/slack.svg".to_string()),
+        named => Some(format!("{ICONS}/{named}/white")),
+    }
+}
 
 /// The presets shipped in a freshly written config file.
 #[must_use]
@@ -196,7 +239,7 @@ pub fn factory() -> Vec<Preset> {
     FACTORY
         .into_iter()
         .map(
-            |(id, label, width, height, max_bytes, format, fit)| Preset {
+            |(id, label, width, height, max_bytes, format, fit, brand)| Preset {
                 id: id.to_string(),
                 label: label.to_string(),
                 width,
@@ -204,7 +247,7 @@ pub fn factory() -> Vec<Preset> {
                 max_bytes,
                 format: (!format.is_empty()).then(|| format.to_string()),
                 fit,
-                icon: None,
+                icon: icon_for(brand),
                 button_color: None,
                 text_color: None,
             },

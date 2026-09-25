@@ -16,6 +16,8 @@ pub mod convert;
 pub mod encode;
 pub mod exec;
 pub mod files;
+pub mod glyphs;
+pub mod http;
 pub mod icons;
 pub mod image;
 pub mod presets;
