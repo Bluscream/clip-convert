@@ -25,5 +25,6 @@ pub mod replace;
 pub mod runner;
 pub mod scratch;
 pub mod text;
+pub mod tidy;
 pub mod typing;
 pub mod video;

@@ -77,6 +77,8 @@ pub enum RunError {
     #[error("there is nothing here that can be converted to another format")]
     NothingToConvert,
     #[error(transparent)]
+    Tidy(#[from] crate::tidy::TextError),
+    #[error(transparent)]
     Convert(#[from] crate::convert::ConvertError),
     #[error(transparent)]
     Video(#[from] crate::video::VideoError),
@@ -136,6 +138,10 @@ fn run_builtin(
         Builtin::Resize => run_resize(clip, config, prompt),
         Builtin::Replace => run_replace(clip, config, prompt),
         Builtin::Convert => run_convert(clip, config, prompt),
+        // These live in `tidy`, beside the transformations they wrap.
+        Builtin::Trim => crate::tidy::run_trim(clip),
+        Builtin::Minify => crate::tidy::run_minify(clip),
+        Builtin::Beautify => crate::tidy::run_beautify(clip),
     }
 }
 

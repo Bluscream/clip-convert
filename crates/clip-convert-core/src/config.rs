@@ -279,6 +279,11 @@ pub fn factory_actions() -> Vec<ActionSpec> {
         builtin("type", "Type", &["any"], Builtin::Type),
         builtin("split", "Split", &["text", "url"], Builtin::Split),
         builtin("truncate", "Truncate", &["text", "url"], Builtin::Truncate),
+        builtin("trim", "Trim", &["text", "url", "html"], Builtin::Trim),
+        // Offered for any text: what can be minified is decided by parsing it,
+        // not by the kind the clipboard reports.
+        builtin("minify", "Minify", &["text"], Builtin::Minify),
+        builtin("beautify", "Beautify", &["text"], Builtin::Beautify),
         builtin(
             "replace",
             "Replace in",
@@ -594,8 +599,11 @@ mod tests {
     /// kinds: what an action is offered for depends on the facets actually
     /// present, and a URL is text as well as a URL.
     fn menu_for(clip: &crate::content::Clip) -> Vec<String> {
-        let actions = Config::default().validate().expect("valid");
-        crate::action::for_kinds(&actions, &clip.kinds())
+        let config = Config::default();
+        let actions = config.validate().expect("valid");
+        // for_clip, not for_kinds: some actions look at the content itself,
+        // and this helper claims to be the menu a real clipboard produces.
+        crate::action::for_clip(&actions, clip, &config)
             .iter()
             .map(|a| a.id.clone())
             .collect()
@@ -605,8 +613,12 @@ mod tests {
     fn the_factory_url_menu_is_the_documented_set() {
         let clip = crate::content::Clip::from_text("https://example.com/a").expect("non-empty");
         // Convert is absent: nothing in the factory table turns a URL into
-        // anything else.
-        assert_eq!(menu_for(&clip), ["type", "split", "truncate", "replace"]);
+        // anything else. Minify and Beautify are absent too: a URL does not
+        // parse as any format they can re-print.
+        assert_eq!(
+            menu_for(&clip),
+            ["type", "split", "truncate", "trim", "replace"]
+        );
     }
 
     #[test]
@@ -621,7 +633,19 @@ mod tests {
     #[test]
     fn plain_text_gets_the_text_actions() {
         let clip = crate::content::Clip::from_text("some words").expect("non-empty");
-        assert_eq!(menu_for(&clip), ["type", "split", "truncate", "replace"]);
+        assert_eq!(
+            menu_for(&clip),
+            ["type", "split", "truncate", "trim", "replace"]
+        );
+    }
+
+    #[test]
+    fn code_on_the_clipboard_also_gets_minify_and_beautify() {
+        let clip = crate::content::Clip::from_text("{\"a\": 1}").expect("non-empty");
+        assert_eq!(
+            menu_for(&clip),
+            ["type", "split", "truncate", "trim", "minify", "beautify", "replace"]
+        );
     }
 
     #[test]

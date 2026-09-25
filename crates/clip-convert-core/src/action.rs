@@ -28,6 +28,12 @@ pub enum Builtin {
     Replace,
     /// Re-encode the content as another format.
     Convert,
+    /// Strip stray whitespace and control characters from the text.
+    Trim,
+    /// Re-print recognised code as compactly as its format allows.
+    Minify,
+    /// Re-print recognised code with indentation and line breaks.
+    Beautify,
 }
 
 /// How clipboard content reaches an external command.
@@ -121,7 +127,13 @@ impl Builtin {
     #[must_use]
     pub fn consumes(self) -> Option<ContentKind> {
         match self {
-            Self::Type | Self::Split | Self::Truncate | Self::Replace => Some(ContentKind::Text),
+            Self::Type
+            | Self::Split
+            | Self::Truncate
+            | Self::Replace
+            | Self::Trim
+            | Self::Minify
+            | Self::Beautify => Some(ContentKind::Text),
             // Resize and Convert have no one subject: both work on images and
             // on video, and the label takes the most specific kind present.
             Self::Resize | Self::Convert => None,
@@ -378,6 +390,13 @@ pub fn for_clip<'a>(
             Run::Builtin(Builtin::Convert) => {
                 !crate::convert::applicable(&config.conversions, &sources).is_empty()
             }
+            // Only for text that actually parses as something. Offered on
+            // every piece of text, these would be two entries that can do
+            // nothing but report an error — which is the complaint that got
+            // `Type` filtered off images.
+            Run::Builtin(Builtin::Minify | Builtin::Beautify) => clip
+                .text()
+                .is_some_and(|body| crate::tidy::detect(body).is_some()),
             _ => true,
         })
         .collect()
@@ -427,6 +446,9 @@ mod tests {
                 "Type Text",
                 "Split Text",
                 "Truncate Text",
+                "Trim Text",
+                "Minify Text",
+                "Beautify Text",
                 "Replace in Text"
             ]
         );
@@ -441,6 +463,9 @@ mod tests {
                 "Type Text",
                 "Split Text",
                 "Truncate Text",
+                "Trim Text",
+                "Minify Text",
+                "Beautify Text",
                 "Replace in Text"
             ]
         );

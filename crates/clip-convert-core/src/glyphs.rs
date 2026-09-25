@@ -40,6 +40,9 @@ pub fn for_builtin(builtin: Builtin) -> String {
         Builtin::Replace => draw_replace(&mut canvas),
         Builtin::Resize => draw_resize(&mut canvas),
         Builtin::Convert => draw_convert(&mut canvas),
+        Builtin::Trim => draw_trim(&mut canvas),
+        Builtin::Minify => draw_minify(&mut canvas),
+        Builtin::Beautify => draw_beautify(&mut canvas),
     }
     encode(&canvas)
 }
@@ -66,6 +69,29 @@ fn draw_truncate(canvas: &mut RgbaImage) {
         let x = 36.0 + f32::from(step) * 10.0;
         rect(canvas, x, 38.0, x + 6.0, 46.0);
     }
+}
+
+/// A full line above a shorter, tidier one: the slack taken out.
+fn draw_trim(canvas: &mut RgbaImage) {
+    rect(canvas, 6.0, 14.0, 58.0, 20.0);
+    rect(canvas, 6.0, 29.0, 34.0, 35.0);
+    rect(canvas, 6.0, 44.0, 46.0, 50.0);
+}
+
+/// Arrows pointing inward at each other: everything pulled together.
+fn draw_minify(canvas: &mut RgbaImage) {
+    rect(canvas, 6.0, 29.0, 26.0, 35.0);
+    arrow_right(canvas, 26.0, 32.0, 10.0);
+    rect(canvas, 38.0, 29.0, 58.0, 35.0);
+    arrow_left(canvas, 38.0, 32.0, 10.0);
+}
+
+/// Lines stepping outward, the way indented code looks.
+fn draw_beautify(canvas: &mut RgbaImage) {
+    rect(canvas, 6.0, 12.0, 40.0, 18.0);
+    rect(canvas, 16.0, 26.0, 52.0, 32.0);
+    rect(canvas, 26.0, 40.0, 58.0, 46.0);
+    rect(canvas, 6.0, 52.0, 30.0, 58.0);
 }
 
 /// Two arrows swapping places: this for that.
