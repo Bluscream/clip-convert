@@ -5,8 +5,8 @@
 //! of widgets that have to be built, bound and torn down.
 
 use crate::widgets::{
-    color, heading, history_field, icon_button, wide_button, Icons, Style, BUTTON_HEIGHT,
-    BUTTON_TEXT,
+    bottom_bar, close_button, color, dialog_buttons, dismiss_button, heading, history_field,
+    icon_button, wide_button, Choice, Icons, Style, BUTTON_HEIGHT, BUTTON_TEXT,
 };
 use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
@@ -17,8 +17,17 @@ const DIALOG_WIDTH: f32 = 460.0;
 /// Width of the resize chooser, which lays its targets out in two columns.
 const WIDE_DIALOG_WIDTH: f32 = 680.0;
 
-/// How many columns the resize chooser uses.
+/// How many columns the resize chooser opens with. It uses more when the
+/// window is dragged wider, so the targets fill the space rather than leaving a
+/// column of nothing beside them.
 const PRESET_COLUMNS: usize = 2;
+
+/// Width one column of targets needs to stay readable.
+const PRESET_COLUMN_WIDTH: f32 = 300.0;
+
+/// Most columns worth using: past this the labels are further apart than they
+/// are wide, and the list stops reading as a list.
+const PRESET_COLUMNS_MAX: usize = 4;
 
 /// Size of a preset's name.
 const PRESET_TITLE: f32 = 15.0;
@@ -231,8 +240,9 @@ pub fn show(
         });
 
     // Escape always dismisses, which is what a prompt over someone else's work
-    // should do.
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // should do — and the corner ✕ says so on screen, for a compositor that
+    // gives the window no title bar to close it with.
+    if close_button(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         return Some(Reply::Cancelled);
     }
     reply
@@ -320,8 +330,15 @@ fn choose_action(
 }
 
 fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Reply> {
-    heading(ui, message);
+    let parsed = value.trim().parse::<usize>().ok().filter(|v| *v > 0);
 
+    // The buttons are placed first so they own the bottom edge; the form above
+    // then takes whatever is left, however tall the window is.
+    let choice = bottom_bar(ui, "limit-actions", |ui| {
+        dialog_buttons(ui, "Continue", parsed.is_some())
+    });
+
+    heading(ui, message);
     let entry = ui.add(
         egui::TextEdit::singleline(value)
             .desired_width(f32::INFINITY)
@@ -333,7 +350,6 @@ fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Rep
         entry.request_focus();
     }
 
-    let parsed = value.trim().parse::<usize>().ok().filter(|v| *v > 0);
     if parsed.is_none() && !value.trim().is_empty() {
         ui.colored_label(
             ui.visuals().error_fg_color,
@@ -342,27 +358,12 @@ fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Rep
     }
 
     let submitted = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    ui.add_space(16.0);
-
-    let mut reply = None;
-    ui.horizontal(|ui| {
-        let accept = ui.add_enabled(
-            parsed.is_some(),
-            egui::Button::new("Continue").min_size([130.0, 36.0].into()),
-        );
-        if let Some(value) = parsed {
-            if accept.clicked() || submitted {
-                reply = Some(Reply::Limit { value });
-            }
-        }
-        if ui
-            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
-            .clicked()
-        {
-            reply = Some(Reply::Cancelled);
-        }
-    });
-    reply
+    match (choice, parsed) {
+        (Some(Choice::Accept), Some(value)) => Some(Reply::Limit { value }),
+        (Some(Choice::Cancel), _) => Some(Reply::Cancelled),
+        _ if submitted => parsed.map(|value| Reply::Limit { value }),
+        _ => None,
+    }
 }
 
 fn ask_resize_target(
@@ -377,13 +378,19 @@ fn ask_resize_target(
 
     heading(ui, "Resize to:");
 
+    // Laid out in columns because the list is long enough that one column means
+    // most of it is off-screen — and in as many as the window is wide enough
+    // for, so resizing makes the list fit rather than leaving empty space.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // A window is never wide enough for this to leave the range.
+    let columns =
+        ((ui.available_width() / PRESET_COLUMN_WIDTH) as usize).clamp(1, PRESET_COLUMNS_MAX);
+
     let mut chosen = None;
     let mut open_custom = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        // Laid out in rows of two: the list is long enough that one column
-        // means most of it is off-screen.
-        for row in presets.chunks(PRESET_COLUMNS) {
-            ui.columns(PRESET_COLUMNS, |columns| {
+        for row in presets.chunks(columns) {
+            ui.columns(columns, |columns| {
                 for (column, preset) in columns.iter_mut().zip(row) {
                     if preset_button(column, icons, preset).clicked() {
                         chosen = Some(preset.clone());
@@ -406,6 +413,15 @@ fn ask_resize_target(
 }
 
 fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
+    let width = fields.width.trim().parse::<u32>().ok().filter(|v| *v > 0);
+    let height = fields.height.trim().parse::<u32>().ok().filter(|v| *v > 0);
+    let max_kb = fields.max_kb.trim().parse::<u64>().ok();
+    let ready = width.is_some() && height.is_some() && max_kb.is_some();
+
+    let choice = bottom_bar(ui, "custom-actions", |ui| {
+        dialog_buttons(ui, "Resize", ready)
+    });
+
     heading(ui, "Fit the image to:");
 
     let row = |ui: &mut egui::Ui, caption: &str, value: &mut String| {
@@ -431,61 +447,49 @@ fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
 
     ui.add_space(10.0);
     ui.checkbox(&mut fields.exact, "Pad to exactly this canvas");
-    ui.add_space(14.0);
 
-    let width = fields.width.trim().parse::<u32>().ok().filter(|v| *v > 0);
-    let height = fields.height.trim().parse::<u32>().ok().filter(|v| *v > 0);
-    let max_kb = fields.max_kb.trim().parse::<u64>().ok();
-
-    if width.is_none() || height.is_none() || max_kb.is_none() {
+    if !ready {
+        ui.add_space(10.0);
         ui.colored_label(
             ui.visuals().error_fg_color,
             "Width and height must be above zero, and the size a whole number.",
         );
     }
 
-    let mut reply = None;
-    ui.horizontal(|ui| {
-        let ready = width.is_some() && height.is_some() && max_kb.is_some();
-        if ui
-            .add_enabled(
-                ready,
-                egui::Button::new("Resize").min_size([130.0, 36.0].into()),
-            )
-            .clicked()
-        {
-            if let (Some(width), Some(height), Some(max_kb)) = (width, height, max_kb) {
-                reply = Some(Reply::ResizeTarget {
-                    preset: Box::new(Preset {
-                        id: "custom".to_string(),
-                        label: "Custom".to_string(),
-                        width,
-                        height,
-                        max_bytes: max_kb * 1024,
-                        format: Some(fields.format.clone()),
-                        fit: if fields.exact {
-                            Fit::Exact
-                        } else {
-                            Fit::Inside
-                        },
-                        icon: None,
-                        button_color: None,
-                        text_color: None,
-                    }),
-                });
-            }
-        }
-        if ui
-            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
-            .clicked()
-        {
-            reply = Some(Reply::Cancelled);
-        }
-    });
-    reply
+    match choice {
+        Some(Choice::Accept) => match (width, height, max_kb) {
+            (Some(width), Some(height), Some(max_kb)) => Some(Reply::ResizeTarget {
+                preset: Box::new(Preset {
+                    id: "custom".to_string(),
+                    label: "Custom".to_string(),
+                    width,
+                    height,
+                    max_bytes: max_kb * 1024,
+                    format: Some(fields.format.clone()),
+                    fit: if fields.exact {
+                        Fit::Exact
+                    } else {
+                        Fit::Inside
+                    },
+                    icon: None,
+                    button_color: None,
+                    text_color: None,
+                }),
+            }),
+            _ => None,
+        },
+        Some(Choice::Cancel) => Some(Reply::Cancelled),
+        None => None,
+    }
 }
 
 fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) -> Option<Reply> {
+    let target = fields.parse();
+    let ready = target.as_ref().is_some_and(|t| !t.constrains_nothing());
+    let choice = bottom_bar(ui, "video-actions", |ui| {
+        dialog_buttons(ui, "Re-encode", ready)
+    });
+
     heading(ui, &format!("Re-encode {subject} to fit:"));
 
     let row = |ui: &mut egui::Ui, caption: &str, hint: &str, value: &mut String| {
@@ -504,7 +508,6 @@ fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) 
     row(ui, "Length", "e.g. 1:30", &mut fields.length);
 
     ui.add_space(10.0);
-    let target = fields.parse();
     match target.as_ref() {
         None => {
             ui.colored_label(
@@ -519,30 +522,12 @@ fn ask_video_target(ui: &mut egui::Ui, subject: &str, fields: &mut VideoFields) 
             ui.label(format!("Result: {}", target.summary()));
         }
     }
-    ui.add_space(14.0);
 
-    let ready = target.as_ref().is_some_and(|t| !t.constrains_nothing());
-    let mut reply = None;
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                ready,
-                egui::Button::new("Re-encode").min_size([130.0, 36.0].into()),
-            )
-            .clicked()
-        {
-            if let Some(target) = target {
-                reply = Some(Reply::VideoTarget { target });
-            }
-        }
-        if ui
-            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
-            .clicked()
-        {
-            reply = Some(Reply::Cancelled);
-        }
-    });
-    reply
+    match choice {
+        Some(Choice::Accept) => target.map(|target| Reply::VideoTarget { target }),
+        Some(Choice::Cancel) => Some(Reply::Cancelled),
+        None => None,
+    }
 }
 
 fn ask_conversion(
@@ -578,10 +563,14 @@ fn ask_replace(
     replacements: &[String],
     fields: &mut ReplaceFields,
 ) -> Option<Reply> {
+    let problem = clipconv::replace::why_invalid(&fields.pattern);
+    let choice = bottom_bar(ui, "replace-actions", |ui| {
+        dialog_buttons(ui, "Replace", problem.is_none())
+    });
+
     heading(ui, "Replace every match of:");
     history_field(ui, "patterns", &mut fields.pattern, patterns);
 
-    let problem = clipconv::replace::why_invalid(&fields.pattern);
     // Only complained about once something has been typed: an empty field on
     // opening is not a mistake yet.
     if let Some(problem) = problem.as_deref().filter(|_| !fields.pattern.is_empty()) {
@@ -596,40 +585,23 @@ fn ask_replace(
     );
     ui.add_space(6.0);
     history_field(ui, "replacements", &mut fields.replacement, replacements);
-    ui.add_space(16.0);
 
-    let mut reply = None;
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                problem.is_none(),
-                egui::Button::new("Replace").min_size([130.0, 36.0].into()),
-            )
-            .clicked()
-        {
-            reply = Some(Reply::Replace {
-                replacement: clipconv::replace::Replacement {
-                    pattern: fields.pattern.clone(),
-                    replacement: fields.replacement.clone(),
-                },
-            });
-        }
-        if ui
-            .add(egui::Button::new("Cancel").min_size([110.0, 36.0].into()))
-            .clicked()
-        {
-            reply = Some(Reply::Cancelled);
-        }
-    });
-    reply
+    match choice {
+        Some(Choice::Accept) => Some(Reply::Replace {
+            replacement: clipconv::replace::Replacement {
+                pattern: fields.pattern.clone(),
+                replacement: fields.replacement.clone(),
+            },
+        }),
+        Some(Choice::Cancel) => Some(Reply::Cancelled),
+        None => None,
+    }
 }
 
 fn show_error(ui: &mut egui::Ui, message: &str) -> Option<Reply> {
+    let dismissed = bottom_bar(ui, "error-actions", |ui| dismiss_button(ui, "Close"));
     ui.label(egui::RichText::new(message).size(14.0));
-    ui.add_space(18.0);
-    ui.add(egui::Button::new("Close").min_size([130.0, 36.0].into()))
-        .clicked()
-        .then_some(Reply::Acknowledged)
+    dismissed.then_some(Reply::Acknowledged)
 }
 
 #[cfg(test)]

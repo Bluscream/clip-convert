@@ -205,35 +205,198 @@ pub fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(14.0);
 }
 
-/// Width of the "Recent" picker beside a history field.
-const PICKER_WIDTH: f32 = 96.0;
+/// Width of the arrow that opens a history field's list.
+const ARROW_WIDTH: f32 = 28.0;
 
-/// A text field with the values used before offered beside it.
+/// Height of a single-line text control and the arrow beside it.
+const FIELD_HEIGHT: f32 = 26.0;
+
+/// Edge length of the corner close button.
+const CLOSE_SIZE: f32 = 22.0;
+
+/// Height of a dialog's action buttons.
+const ACTION_HEIGHT: f32 = 38.0;
+
+/// A text field with an arrow on its end that drops down what was used before.
 ///
 /// A plain dropdown cannot take a new value and a plain field cannot offer an
-/// old one, so this is both: type anything, or pick something typed before.
-/// The picker is disabled rather than hidden when there is no history, so the
+/// old one, so this is both — and drawn flush, with no spacing between them, so
+/// it reads as one control rather than a field that happens to have a list
+/// beside it. The list is as wide as the field it fills in.
+///
+/// The arrow is disabled rather than hidden when there is no history, so the
 /// field does not change width the first time the action is used.
 pub fn history_field(ui: &mut egui::Ui, id: &str, value: &mut String, history: &[String]) {
+    let popup_id = ui.make_persistent_id(id);
+    let total = ui.available_width();
+
     ui.horizontal(|ui| {
-        let field_width =
-            (ui.available_width() - PICKER_WIDTH - ui.spacing().item_spacing.x).max(PICKER_WIDTH);
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .desired_width(field_width)
-                .font(egui::TextStyle::Monospace),
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        let field = ui.add_sized(
+            [(total - ARROW_WIDTH).max(ARROW_WIDTH), FIELD_HEIGHT],
+            egui::TextEdit::singleline(value).font(egui::TextStyle::Monospace),
         );
-        ui.add_enabled_ui(!history.is_empty(), |ui| {
-            egui::ComboBox::from_id_salt(id)
-                .width(PICKER_WIDTH)
-                .selected_text("Recent")
-                .show_ui(ui, |ui| {
-                    for past in history {
-                        if ui.selectable_label(past == value, past).clicked() {
-                            value.clone_from(past);
-                        }
+        if drop_arrow(ui, !history.is_empty()).clicked() {
+            ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+        }
+
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &field,
+            egui::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.set_min_width(total);
+                for past in history {
+                    if ui.selectable_label(past == value, past).clicked() {
+                        value.clone_from(past);
                     }
-                });
-        });
+                }
+            },
+        );
     });
+}
+
+/// The arrow on the end of a history field, painted rather than written.
+///
+/// The bundled fonts have no glyph for a small solid triangle — it comes out
+/// as an empty box — so the shape is drawn directly, which also makes it
+/// independent of whatever fonts a system happens to have.
+fn drop_arrow(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ARROW_WIDTH, FIELD_HEIGHT), sense);
+
+    if ui.is_rect_visible(rect) {
+        let visuals = if enabled {
+            *ui.style().interact(&response)
+        } else {
+            ui.visuals().widgets.noninteractive
+        };
+        ui.painter().rect(
+            rect,
+            visuals.rounding,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+        );
+
+        let centre = rect.center();
+        let half = 4.0;
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(centre.x - half, centre.y - half / 2.0),
+                egui::pos2(centre.x + half, centre.y - half / 2.0),
+                egui::pos2(centre.x, centre.y + half),
+            ],
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+    }
+    response
+}
+
+/// What a dialog's button row was clicked with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Accept,
+    Cancel,
+}
+
+/// Runs `add` in a strip pinned to the bottom edge of the dialog.
+///
+/// A window stretched tall should not leave its actions stranded in the middle
+/// of an empty panel. Pinning them to the bottom is what makes a resized window
+/// look deliberate rather than half-filled.
+pub fn bottom_bar<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::TopBottomPanel::bottom(id)
+        .frame(egui::Frame::none().outer_margin(egui::Margin {
+            top: 12.0,
+            ..egui::Margin::ZERO
+        }))
+        .show_inside(ui, add)
+        .inner
+}
+
+/// The usual pair of dialog buttons, sharing the full width between them.
+///
+/// `add_sized` rather than `min_size`: only the former centres the label. A
+/// button merely given a minimum size draws its text against the left edge,
+/// which looks like a mistake once the button is half a window wide.
+pub fn dialog_buttons(ui: &mut egui::Ui, accept: &str, ready: bool) -> Option<Choice> {
+    let mut chosen = None;
+    ui.columns(2, |columns| {
+        let width = columns[0].available_width();
+        let accept = egui::Button::new(egui::RichText::new(accept).size(15.0).strong());
+        if columns[0]
+            .add_enabled_ui(ready, |ui| {
+                ui.add_sized([width, ACTION_HEIGHT], accept).clicked()
+            })
+            .inner
+        {
+            chosen = Some(Choice::Accept);
+        }
+
+        let width = columns[1].available_width();
+        let cancel = egui::Button::new(egui::RichText::new("Cancel").size(15.0));
+        if columns[1]
+            .add_sized([width, ACTION_HEIGHT], cancel)
+            .clicked()
+        {
+            chosen = Some(Choice::Cancel);
+        }
+    });
+    chosen
+}
+
+/// One button filling the width, for a dialog with nothing to decide.
+pub fn dismiss_button(ui: &mut egui::Ui, label: &str) -> bool {
+    let width = ui.available_width();
+    ui.add_sized(
+        [width, ACTION_HEIGHT],
+        egui::Button::new(egui::RichText::new(label).size(15.0).strong()),
+    )
+    .clicked()
+}
+
+/// A frameless ✕ in the top-right corner of the window.
+///
+/// A compositor is not obliged to decorate a window, and a dialog with no
+/// title bar and no way to close it is a trap — Escape works, but nothing on
+/// screen says so. Drawn without a background so it reads as part of the
+/// chrome rather than as one of the dialog's own choices.
+pub fn close_button(ctx: &egui::Context) -> bool {
+    egui::Area::new(egui::Id::new("close-button"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 8.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            // Painted rather than written, for the same reason as the arrow:
+            // the bundled fonts have no cross, and a missing glyph in the one
+            // control that closes the window is not a risk worth taking.
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(CLOSE_SIZE, CLOSE_SIZE), egui::Sense::click());
+
+            if ui.is_rect_visible(rect) {
+                let colour = if response.hovered() {
+                    ui.visuals().strong_text_color()
+                } else {
+                    ui.visuals().weak_text_color()
+                };
+                let arm = rect.shrink(CLOSE_SIZE * 0.3);
+                let stroke = egui::Stroke::new(1.6_f32, colour);
+                ui.painter()
+                    .line_segment([arm.left_top(), arm.right_bottom()], stroke);
+                ui.painter()
+                    .line_segment([arm.right_top(), arm.left_bottom()], stroke);
+            }
+            response.on_hover_text("Close").clicked()
+        })
+        .inner
 }
