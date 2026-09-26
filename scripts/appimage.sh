@@ -137,7 +137,13 @@ chmod +x "$APPDIR/AppRun"
 
 echo "==> packing"
 mkdir -p "$OUT_DIR"
-OUTPUT="$OUT_DIR/clip-convert-$VERSION-$ARCH.AppImage"
+# No version in the name, deliberately. A release asset called the same thing
+# every time is what makes this URL work for an update script:
+#
+#   https://github.com/Bluscream/clip-convert/releases/latest/download/clip-convert-x86_64.AppImage
+#
+# The version is on the release itself, and `--version` reports it.
+OUTPUT="$OUT_DIR/clip-convert-$ARCH.AppImage"
 # No desktop integration prompt and no update information: this is a plain
 # portable binary, and Gear Lever handles integration on this desktop.
 ARCH="$ARCH" appimagetool --no-appstream "$APPDIR" "$OUTPUT" >/dev/null
@@ -174,7 +180,7 @@ hotkey (sudo usermod -aG input "$USER", then log back in).
 Built against glibc 2.31, so it runs on anything from about 2020 onward.
 NOTE
 
-TARBALL="$OUT_DIR/clip-convert-$VERSION-$ARCH.tar.gz"
+TARBALL="$OUT_DIR/clip-convert-$ARCH.tar.gz"
 tar -czf "$TARBALL" -C "$(dirname "$PORTABLE")" "$(basename "$PORTABLE")"
 
 # The point of shipping it is that it runs somewhere else, so check it is not
@@ -188,15 +194,5 @@ fi
 echo "==> built $TARBALL"
 ls -lh "$TARBALL"
 
-# Copies under a name that does not change between releases, which is what
-# makes the download URL usable by an update script:
-#
-#   https://github.com/Bluscream/clip-convert/releases/latest/download/clip-convert-x86_64.AppImage
-#
-# That URL only resolves if the asset is called the same thing in every
-# release, so the versioned names above are for people and these are for
-# machines. Both are attached.
-echo "==> stable names"
-cp -f "$OUTPUT" "$OUT_DIR/clip-convert-$ARCH.AppImage"
-cp -f "$TARBALL" "$OUT_DIR/clip-convert-$ARCH.tar.gz"
+echo "==> done"
 ls -1 "$OUT_DIR"

@@ -256,7 +256,7 @@ pub fn factory() -> Vec<Preset> {
 }
 
 impl Preset {
-    /// A one-line summary for the chooser, e.g. `512×512 · WEBP · max 512 KB`.
+    /// A one-line summary for the chooser, e.g. `512×512 · WEBP · <512KB`.
     ///
     /// Only mentions what the target actually constrains, so a size-only target
     /// does not claim dimensions it leaves alone.
@@ -272,8 +272,10 @@ impl Preset {
         }
         if self.max_bytes > 0 {
             parts.push(format!(
-                "max {}",
-                crate::content::human_bytes(usize::try_from(self.max_bytes).unwrap_or(usize::MAX))
+                "<{}",
+                crate::content::compact_bytes(
+                    usize::try_from(self.max_bytes).unwrap_or(usize::MAX)
+                )
             ));
         }
 
@@ -420,13 +422,13 @@ mod tests {
     #[test]
     fn summary_reports_the_size_cap() {
         let preset = &factory()[0];
-        assert_eq!(preset.summary(), "320×320 · PNG · max 512.0 KB");
+        assert_eq!(preset.summary(), "320×320 · PNG · <512KB");
 
         // A size-only target mentions only what it constrains.
         let size_only = factory()
             .into_iter()
             .find(|p| p.id == "discord-file")
             .expect("size-only target");
-        assert_eq!(size_only.summary(), "max 10.0 MB");
+        assert_eq!(size_only.summary(), "<10MB");
     }
 }

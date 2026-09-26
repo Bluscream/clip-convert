@@ -436,6 +436,30 @@ pub fn human_bytes(bytes: usize) -> String {
     }
 }
 
+/// The same size, as short as it can be written.
+///
+/// For a button caption, where `512.0 KB` is three characters of nothing:
+/// no space before the unit, and no decimal on a whole number.
+#[must_use]
+pub fn compact_bytes(bytes: usize) -> String {
+    #[allow(clippy::cast_precision_loss)] // Display only.
+    let value = bytes as f64;
+    let (scaled, unit) = if bytes < 1024 {
+        return format!("{bytes}B");
+    } else if bytes < 1024 * 1024 {
+        (value / 1024.0, "KB")
+    } else {
+        (value / (1024.0 * 1024.0), "MB")
+    };
+
+    // A whole number keeps no decimal; 1.5 MB still needs one.
+    if (scaled.fract()).abs() < 0.05 {
+        format!("{scaled:.0}{unit}")
+    } else {
+        format!("{scaled:.1}{unit}")
+    }
+}
+
 /// Reads a size written the way people write sizes: `10mb`, `1.5 GB`, `512k`,
 /// or a plain number of bytes.
 ///
@@ -731,6 +755,16 @@ mod tests {
         assert_eq!(thousands(7), "7");
         assert_eq!(thousands(1_204), "1 204");
         assert_eq!(thousands(1_000_000), "1 000 000");
+    }
+
+    #[test]
+    fn compact_bytes_drops_what_a_button_does_not_need() {
+        assert_eq!(compact_bytes(900), "900B");
+        assert_eq!(compact_bytes(512 * 1024), "512KB");
+        assert_eq!(compact_bytes(8 * 1024 * 1024), "8MB");
+        // Not every size is whole, and rounding 1.5 to 2 would be a lie.
+        assert_eq!(compact_bytes(1536 * 1024), "1.5MB");
+        assert_eq!(compact_bytes(1024), "1KB");
     }
 
     #[test]

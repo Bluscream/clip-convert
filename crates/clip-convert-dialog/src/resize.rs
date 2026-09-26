@@ -310,9 +310,10 @@ fn preset_button(
         },
     );
     // The armed preset says what a second click will do, so the shortcut is
-    // discoverable rather than something to be told about.
+    // discoverable rather than something to be told about. Joined with the
+    // same separator as the rest of the line, so it reads as one caption.
     let subtitle = if armed {
-        format!("\n{} — click again to apply", preset.summary())
+        format!("\n{} · click to apply", preset.summary())
     } else {
         format!("\n{}", preset.summary())
     };
