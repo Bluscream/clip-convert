@@ -144,3 +144,59 @@ ARCH="$ARCH" appimagetool --no-appstream "$APPDIR" "$OUTPUT" >/dev/null
 
 echo "==> built $OUTPUT"
 ls -lh "$OUTPUT"
+
+# A plain tarball as well, for anyone who does not want an AppImage: a distro
+# package, a container, or a machine without FUSE.
+#
+# A tarball rather than two loose binaries, because they are not independent —
+# the daemon looks for clip-convert-dialog beside its own executable, and a
+# download of one without the other can show no dialog at all.
+echo "==> packing the portable tarball"
+PORTABLE="$PROJECT_DIR/target/portable/clip-convert-$VERSION-$ARCH"
+rm -rf "$PORTABLE"
+mkdir -p "$PORTABLE"
+install -m755 "$BIN_DIR/clip-convert" "$BIN_DIR/clip-convert-dialog" "$PORTABLE/"
+strip "$PORTABLE/clip-convert" "$PORTABLE/clip-convert-dialog" 2>/dev/null || true
+install -m644 packaging/clip-convert.desktop packaging/clip-convert.svg "$PORTABLE/"
+
+cat > "$PORTABLE/README" <<'NOTE'
+clip-convert — portable build
+
+Keep both binaries together: clip-convert looks for clip-convert-dialog
+beside its own executable, and without it no dialog can be shown.
+
+    ./clip-convert            run it
+    ./clip-convert --help     what else it takes
+
+Needs wl-clipboard on Wayland, and membership of the `input` group for the
+hotkey (sudo usermod -aG input "$USER", then log back in).
+
+Built against glibc 2.31, so it runs on anything from about 2020 onward.
+NOTE
+
+TARBALL="$OUT_DIR/clip-convert-$VERSION-$ARCH.tar.gz"
+tar -czf "$TARBALL" -C "$(dirname "$PORTABLE")" "$(basename "$PORTABLE")"
+
+# The point of shipping it is that it runs somewhere else, so check it is not
+# linked against anything this machine happens to have.
+if ldd "$PORTABLE/clip-convert" | grep -q 'not found'; then
+    echo "FAILED: the portable binary has unresolved libraries" >&2
+    ldd "$PORTABLE/clip-convert" | grep 'not found' >&2
+    exit 1
+fi
+
+echo "==> built $TARBALL"
+ls -lh "$TARBALL"
+
+# Copies under a name that does not change between releases, which is what
+# makes the download URL usable by an update script:
+#
+#   https://github.com/Bluscream/clip-convert/releases/latest/download/clip-convert-x86_64.AppImage
+#
+# That URL only resolves if the asset is called the same thing in every
+# release, so the versioned names above are for people and these are for
+# machines. Both are attached.
+echo "==> stable names"
+cp -f "$OUTPUT" "$OUT_DIR/clip-convert-$ARCH.AppImage"
+cp -f "$TARBALL" "$OUT_DIR/clip-convert-$ARCH.tar.gz"
+ls -1 "$OUT_DIR"

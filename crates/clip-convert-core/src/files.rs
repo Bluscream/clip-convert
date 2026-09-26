@@ -125,14 +125,14 @@ mod tests {
 
     #[test]
     fn a_single_uri_becomes_a_path() {
-        let paths = parse_uri_list("file:///home/blu/a.png");
-        assert_eq!(paths, [PathBuf::from("/home/blu/a.png")]);
+        let paths = parse_uri_list("file:///home/user/a.png");
+        assert_eq!(paths, [PathBuf::from("/home/user/a.png")]);
     }
 
     #[test]
     fn a_crlf_list_from_a_file_manager_parses() {
         // This is the shape a file manager actually sends.
-        let body = "file:///home/blu/one.png\r\nfile:///home/blu/two.png\r\n";
+        let body = "file:///home/user/one.png\r\nfile:///home/user/two.png\r\n";
         assert_eq!(parse_uri_list(body).len(), 2);
     }
 
@@ -146,8 +146,8 @@ mod tests {
     fn percent_encoding_is_decoded() {
         // A path with spaces and non-ASCII must survive intact, which is the
         // whole reason uri-list is percent-encoded.
-        let paths = parse_uri_list("file:///home/blu/My%20Photos/caf%C3%A9.png");
-        assert_eq!(paths, [PathBuf::from("/home/blu/My Photos/café.png")]);
+        let paths = parse_uri_list("file:///home/user/My%20Photos/caf%C3%A9.png");
+        assert_eq!(paths, [PathBuf::from("/home/user/My Photos/café.png")]);
     }
 
     #[test]
@@ -178,10 +178,10 @@ mod tests {
     /// Note the doubled space encoded as `%20%20`, the `@` in a filename, and
     /// the CRLF line endings — all of which a hand-rolled splitter gets wrong.
     const DOLPHIN_SAMPLE: &str = concat!(
-        "file:///run/media/system/Data/Pictures/netspeedmonitor%20%20majorgeeks1.jpg\r\n",
-        "file:///run/media/system/Data/Pictures/bliss_4k.png\r\n",
-        "file:///run/media/system/Data/Pictures/Snapshot@2022_0311_173322.jpg\r\n",
-        "file:///run/media/system/Data/Pictures/menu-buy.gif\r\n",
+        "file:///mnt/data/Pictures/netspeedmonitor%20%20majorgeeks1.jpg\r\n",
+        "file:///mnt/data/Pictures/bliss_4k.png\r\n",
+        "file:///mnt/data/Pictures/Snapshot@2022_0311_173322.jpg\r\n",
+        "file:///mnt/data/Pictures/menu-buy.gif\r\n",
     );
 
     #[test]
@@ -190,12 +190,12 @@ mod tests {
         assert_eq!(paths.len(), 4);
         assert_eq!(
             paths[0],
-            PathBuf::from("/run/media/system/Data/Pictures/netspeedmonitor  majorgeeks1.jpg"),
+            PathBuf::from("/mnt/data/Pictures/netspeedmonitor  majorgeeks1.jpg"),
             "the doubled space should decode back to two spaces"
         );
         assert_eq!(
             paths[2],
-            PathBuf::from("/run/media/system/Data/Pictures/Snapshot@2022_0311_173322.jpg")
+            PathBuf::from("/mnt/data/Pictures/Snapshot@2022_0311_173322.jpg")
         );
         assert!(
             all_images(&paths),

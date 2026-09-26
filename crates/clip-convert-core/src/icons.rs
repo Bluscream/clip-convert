@@ -424,8 +424,8 @@ mod tests {
             Some(Source::Url("https://example.com/i.png".to_string()))
         );
         assert_eq!(
-            classify("/home/blu/i.png"),
-            Some(Source::Path("/home/blu/i.png".into()))
+            classify("/home/user/i.png"),
+            Some(Source::Path("/home/user/i.png".into()))
         );
         assert_eq!(
             classify("./icons/i.png"),
@@ -486,7 +486,7 @@ mod tests {
     fn an_unresolved_source_does_not_decode() {
         // The dialog must never fetch anything to draw a button.
         assert_eq!(decode("https://example.com/i.png"), None);
-        assert_eq!(decode("/home/blu/i.png"), None);
+        assert_eq!(decode("/home/user/i.png"), None);
     }
 
     #[test]

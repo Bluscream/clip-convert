@@ -10,7 +10,7 @@ Which actions exist, what they are called, in what order they appear and what
 they do is entirely config-driven. Adding your own is a few lines of TOML and a
 script; nothing needs recompiling.
 
-It began as a fork of [`yourls-tray-app`](../yourls-tray-app), but shares no
+It began as a fork of [`yourls-tray-app`](https://github.com/Bluscream/yourls-tray-app), but shares no
 code with it any more. Shortening went back the other way: that app is now a
 CLI, and this one calls it like any other configured command.
 
@@ -23,11 +23,11 @@ CLI, and this one calls it like any other configured command.
 
 | | |
 | :---: | :---: |
-| ![The action menu for an image](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/actions_picture.png) | ![The action menu for a file selection](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/actions_files_text.png) |
+| ![The action menu for an image](assets/screenshots/actions_picture.png) | ![The action menu for a file selection](assets/screenshots/actions_files_text.png) |
 | **An image on the clipboard.** The menu names what it found — kind, format, dimensions, size — and offers only what can act on it. | **Five files, which are also text.** A selection has a text form too, so the text actions are offered for the list of paths. |
-| ![The resize form with a preset armed](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/presets_image_resize.png) | ![Converting a PNG](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/convert_picture.png) |
+| ![The resize form with a preset armed](assets/screenshots/presets_image_resize.png) | ![Converting a PNG](assets/screenshots/convert_picture.png) |
 | **Size presets.** Clicking one fills its limits into the form below and tints the button; clicking it again applies it. Background removal and cropping are on by default for any format that can hold transparency. | **Conversions.** Offered only when something on the clipboard can actually be converted, and the list is whatever the config says. |
-| ![Find and replace](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/find_and_replace.png) | ![Re-encoding a video](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/resize_video.png) |
+| ![Find and replace](assets/screenshots/find_and_replace.png) | ![Re-encoding a video](assets/screenshots/resize_video.png) |
 | **Find and replace.** A regular expression with capture groups; both fields remember what you last used. | **Video.** A different question from a sticker preset — width, height, file size and length, any of which may be left blank. |
 
 </details>
