@@ -1,8 +1,7 @@
 name: Release
 
+# Manual only; see the note in ci.yml.
 on:
-  #push:
-    #tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:

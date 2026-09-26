@@ -1,9 +1,10 @@
 name: CI
 
+# Manual only, on purpose. Actions cannot run automatically on this account,
+# so a push- or pull-request-triggered workflow produces nothing but a
+# startup_failure on every commit — noise that hides a real failure. Run it
+# from the Actions tab when it is wanted.
 on:
-  #push:
-    #branches: [main]
-  pull_request:
   workflow_dispatch:
 
 env:

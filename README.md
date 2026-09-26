@@ -61,11 +61,13 @@ Use *one* autostart mechanism — a systemd unit and a `~/.config/autostart`
 entry will both start it, and the second copy exits immediately because of the
 single-instance lock, which looks exactly like a failure to start.
 
-**Windows and macOS.** Both compile, and the release workflow builds and
-attaches them — but nothing more than that: see
-[platform support](#platform-support). They are not in the current releases,
-because GitHub Actions does not run on this repository while it is private.
-Making it public is all that is needed.
+**Windows and macOS.** Both compile and the release workflow can build them,
+but they are not in the releases: GitHub Actions does not run on this account,
+so every workflow here is `workflow_dispatch` only — manual, from the Actions
+tab — and nothing builds them automatically. Building them locally is the
+alternative: `cargo build --release --target x86_64-pc-windows-gnu` with
+mingw-w64 installed. See [platform support](#platform-support) for what to
+expect once they are built; neither has been run.
 
 ---
 
@@ -79,7 +81,10 @@ Press the hotkey and the menu lists what applies to the current content:
 | **Split** | text, a URL | Asks for a character limit, then sends the text in pieces, pressing Return between them and pausing so the receiving app keeps up. |
 | **Truncate** | text, a URL | Asks for a character limit and cuts the text to fit, marking the cut. |
 | **Replace** | text, a URL, rich text | Asks for a regular expression and a replacement — `$1` and `${name}` work — and substitutes every match. The last ten of each are remembered and offered beside the field. |
-| **Resize** | an image, video | For images, asks for a size target — a platform preset or your own. For video, asks for any of width, height, file size and length. |
+| **Trim** | text, a URL, rich text | Removes as much whitespace and as many stray control characters as can go without changing what the text says. |
+| **Minify** | code | Re-prints JSON or TOML as compactly as the format allows. |
+| **Beautify** | code | The reverse: indentation and line breaks. |
+| **Resize** | an image, video | For images, a size target — a platform preset or your own — plus optional background removal and cropping. For video, any of width, height, file size and length. |
 | **Convert** | an image, files, rich text | Asks what to convert to, in a second dialog listing only what the current content can actually become. |
 
 Labels name what they will act on, pluralised by what is there: the same entry
@@ -97,6 +102,20 @@ menu was pressed by hands that are already on it:
 | `↑` `↓` `Tab` | Move the selection |
 | `Enter` `Space` | Run the selected entry, or accept a form |
 | `Esc` | Dismiss |
+
+**Trim** is for text that arrived from somewhere untidy — a terminal, a PDF,
+a chat window. It normalises line endings, strips ANSI escape sequences,
+control characters and zero-width characters, collapses runs of whitespace,
+trims every line and drops the blank ones. What survives is what the text
+actually said.
+
+**Minify** and **Beautify** only touch formats that can be parsed and printed
+back — JSON and TOML — so the result is the same document rather than a
+plausible guess. Anything else is refused: silently mangling code on someone's
+clipboard is worse than declining to. For another language, configure an action
+that runs its own formatter; that is what the action model is for. Both are
+offered only when the text actually parses as something, so they never appear
+as buttons that can only produce an error.
 
 Only actions that can actually do something appear. An image gets *Resize* and
 *Convert*; it does not get *Type*, because there is no text to type, and an
@@ -128,8 +147,17 @@ repetitive work, not a setting to forget you changed.
 
 `Resize` offers presets transcribed from a sticker-limits table, each carrying
 its platform's real rules — Discord, Telegram (and pack icons), Signal, WhatsApp
-(and tray icons), VRChat, Slack, LINE and Matrix — plus a **Custom size** form.
-They live in the config file and can be added to, edited or removed.
+(and tray icons), VRChat, Slack, LINE and Matrix. They live in the config file
+and can be added to, edited or removed.
+
+**Clicking a preset fills its limits into the form below it** rather than
+resizing on the spot, so the numbers can be adjusted first; the button is
+tinted and its caption changes to `· click to apply`, and clicking it again
+applies it. One stray click is therefore never an irreversible re-encode, and
+the fast path is still two clicks. The fields are always editable on their own,
+so there is no separate custom-size screen: width, height and maximum size take
+`0` for "no limit", and the form is ready as soon as anything would actually
+happen — including when the only thing asked for is a crop.
 
 A preset need not constrain dimensions at all: **Discord file** caps the size at
 10 MB and changes nothing else, keeping the source's own format and canvas.
@@ -142,6 +170,31 @@ Meeting a file-size cap is a search: quality is lowered first, then — for
 from the last measurement rather than stepped down blindly. An `exact` preset
 that cannot meet its cap **reports that** rather than quietly returning a
 smaller image the platform would reject.
+
+### Background removal and cropping
+
+The resize form has two checkboxes, and they apply to whichever target is
+chosen.
+
+**Remove background** finds the colour around the edges of the image and fills
+inward from them, making it transparent. It fills rather than replacing that
+colour everywhere, which matters: the white of a page behind a screenshot
+should go, and the white of an eye in the middle of a sticker should not. A
+pixel is cleared only if it matches the background *and* can be reached from an
+edge through other background pixels. There is a tolerance, because a "flat"
+background stops being flat as soon as JPEG artefacts or a gradient are
+involved. An image whose edges are already transparent is left alone.
+
+**Fill to borders** crops every side until the content touches the edge. It
+decides by transparency when the image has any — so both boxes together give
+you background removed, then cropped to the subject — and by the border colour
+when it does not, which is what crops a screenshot with a wide flat margin.
+
+Both start on for every preset, except one whose format has no alpha channel:
+removing a background for a JPEG only flattens it back to white on the way out,
+so that preset crops but keeps its background. A preset that keeps the source's
+format follows the source image. Once you change a box by hand it stays as you
+set it, rather than being overwritten by the next preset you click.
 
 ### Video
 

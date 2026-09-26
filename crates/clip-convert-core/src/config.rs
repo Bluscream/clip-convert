@@ -500,10 +500,66 @@ pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
         source,
     })?;
 
+    let text = drop_removed_settings(&text, path);
     toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Settings that used to exist and no longer do.
+///
+/// All six are what the built-in link shortener left behind when it moved out
+/// into its own program. `deny_unknown_fields` cannot tell a removed setting
+/// from a misspelled one, so without this an upgrade refuses to start until
+/// the file is edited by hand — which is exactly what happened.
+const REMOVED_SETTINGS: &[&str] = &[
+    "auto_shorten",
+    "shorteners",
+    "blacklist_regex",
+    "bypass_shift",
+    "bypass_scroll_lock",
+    "bypass_double_copy",
+];
+
+/// Removes settings this version no longer has, saying so.
+///
+/// Only the names above: anything else unknown is still an error, because a
+/// typo that is silently ignored is a setting that silently does nothing.
+///
+/// The file itself is left alone. It is rewritten in full the next time
+/// something changes, and quietly rewriting someone's config during a read is
+/// a surprise nobody asked for.
+fn drop_removed_settings(text: &str, path: &std::path::Path) -> String {
+    let Ok(toml::Value::Table(mut table)) = text.parse::<toml::Value>() else {
+        // Not parseable as TOML at all: leave it be, so the error the caller
+        // reports is the real one rather than something this invented.
+        return text.to_string();
+    };
+
+    let mut dropped = Vec::new();
+    for name in REMOVED_SETTINGS {
+        if table.remove(*name).is_some() {
+            dropped.push(*name);
+        }
+    }
+    if dropped.is_empty() {
+        return text.to_string();
+    }
+
+    log::warn!(
+        "{}: ignoring {} that this version no longer has: {}. \
+         Link shortening moved to its own program; see the README.",
+        path.display(),
+        if dropped.len() == 1 {
+            "a setting"
+        } else {
+            "settings"
+        },
+        dropped.join(", ")
+    );
+
+    toml::to_string(&toml::Value::Table(table)).unwrap_or_else(|_| text.to_string())
 }
 
 /// Writes `config` to `path`, creating the parent directory if needed.
@@ -649,6 +705,48 @@ mod tests {
         assert_eq!(
             menu_for(&clip),
             ["type", "split", "truncate", "trim", "minify", "beautify", "replace"]
+        );
+    }
+
+    #[test]
+    fn a_config_from_before_the_shortener_moved_out_still_loads() {
+        // The exact failure this fixes: six leftovers from the built-in
+        // shortener made the daemon refuse to start, because
+        // deny_unknown_fields cannot tell a removed setting from a typo.
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "auto_shorten = false\n\
+             blacklist_regex = \"\"\n\
+             bypass_shift = true\n\
+             bypass_scroll_lock = true\n\
+             bypass_double_copy = true\n\
+             shorteners = []\n\
+             hotkey = \"ctrl+b\"\n",
+        )
+        .expect("write");
+
+        let config = load_from(&path).expect("an old config should still load");
+        assert_eq!(config.hotkey, "ctrl+b", "the settings that remain are kept");
+    }
+
+    #[test]
+    fn a_misspelled_setting_is_still_an_error() {
+        // The point of keeping deny_unknown_fields: a typo that is silently
+        // ignored is a setting that silently does nothing.
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "hotkeys = \"ctrl+b\"\n").expect("write");
+        assert!(load_from(&path).is_err());
+    }
+
+    #[test]
+    fn a_config_with_nothing_removed_is_passed_through_untouched() {
+        let text = "hotkey = \"ctrl+b\"\nnotifications = true\n";
+        assert_eq!(
+            drop_removed_settings(text, std::path::Path::new("test.toml")),
+            text
         );
     }
 
