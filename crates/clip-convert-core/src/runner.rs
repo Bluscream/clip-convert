@@ -23,7 +23,16 @@ pub trait Prompt {
     /// Asks for a character limit, pre-filled with `default`.
     fn ask_limit(&self, title: &str, message: &str, default: usize) -> Option<usize>;
     /// Asks which size target to resize to.
-    fn ask_resize_target(&self, presets: &[Preset]) -> Option<Preset>;
+    /// Which size target to use, and what extra work to do on the pixels.
+    ///
+    /// `source_keeps_alpha` says whether the image on the clipboard is in a
+    /// format with an alpha channel, which decides the default for a preset
+    /// that keeps the source's format rather than naming one.
+    fn ask_resize_target(
+        &self,
+        presets: &[Preset],
+        source_keeps_alpha: bool,
+    ) -> Option<(Preset, crate::cutout::ImageOptions)>;
     /// Asks how to re-encode video: any of width, height, size and length.
     fn ask_video_target(&self, subject: &str) -> Option<crate::video::VideoTarget>;
     /// Asks which format to convert to, given what the content already is.
@@ -135,7 +144,7 @@ fn run_builtin(
         }
         Builtin::Split => run_split(clip, config, prompt),
         Builtin::Truncate => run_truncate(clip, config, prompt),
-        Builtin::Resize => run_resize(clip, config, prompt),
+        Builtin::Resize => crate::resize::run(clip, config, prompt),
         Builtin::Replace => run_replace(clip, config, prompt),
         Builtin::Convert => run_convert(clip, config, prompt),
         // These live in `tidy`, beside the transformations they wrap.
@@ -248,86 +257,6 @@ fn run_replace(
     }))
 }
 
-fn run_resize(
-    clip: &Clip,
-    config: &Config,
-    prompt: &dyn Prompt,
-) -> Result<Option<Outcome>, RunError> {
-    // Video is a different question — length and bitrate, not a sticker
-    // preset — so it gets its own form rather than a preset list that would
-    // mean nothing for it.
-    if clip.kinds().contains(&crate::content::ContentKind::Video) {
-        return run_video_resize(clip, config, prompt);
-    }
-
-    let Some(target) = prompt.ask_resize_target(&config.presets) else {
-        return Ok(None);
-    };
-
-    // Image data held directly on the clipboard is replaced in place. A
-    // selection of image files is a batch, and its results are written out as
-    // files because a clipboard can only hold one image at a time.
-    if let Some((_, bytes)) = clip.image() {
-        return resize_one(bytes, &target).map(Some);
-    }
-
-    let files = clip.files().ok_or_else(|| RunError::WrongKind {
-        label: "Resize".to_string(),
-    })?;
-
-    let batch = crate::batch::resize_batch(files, &target)?;
-    clipboard::write_files(&batch.written)?;
-    Ok(Some(batch.into_outcome(&target)))
-}
-
-/// Re-encodes a selection of videos to whatever the user asked for.
-fn run_video_resize(
-    clip: &Clip,
-    config: &Config,
-    prompt: &dyn Prompt,
-) -> Result<Option<Outcome>, RunError> {
-    let files = clip.files().ok_or_else(|| RunError::WrongKind {
-        label: "Resize".to_string(),
-    })?;
-
-    let subject = format!(
-        "{} {}",
-        files.len(),
-        clip.noun_for(crate::content::ContentKind::Video)
-            .to_lowercase()
-    );
-    let Some(target) = prompt.ask_video_target(&subject) else {
-        return Ok(None);
-    };
-    if target.constrains_nothing() {
-        return Ok(None);
-    }
-
-    let batch = crate::batch::video_batch(files, &target, &config.video)?;
-    clipboard::write_files(&batch.written)?;
-
-    let mut outcome = batch.into_outcome(&Preset {
-        id: "video".to_string(),
-        label: target.summary(),
-        width: 0,
-        height: 0,
-        max_bytes: 0,
-        format: None,
-        fit: crate::presets::Fit::Inside,
-        icon: None,
-        button_color: None,
-        text_color: None,
-    });
-    outcome.message = outcome.message.replace("Resized", "Re-encoded");
-    Ok(Some(outcome))
-}
-
-/// Asks what to convert to, then does it.
-///
-/// The choice is a second dialog rather than a longer action menu: which
-/// conversions exist depends on what the clipboard holds, and folding them
-/// into the first menu would make its length depend on the content in a way
-/// that makes the common entries move around.
 fn run_convert(
     clip: &Clip,
     config: &Config,
@@ -404,22 +333,6 @@ fn convert_clip(
 }
 
 /// Replaces the clipboard's image with a resized copy.
-fn resize_one(bytes: &[u8], target: &Preset) -> Result<Outcome, RunError> {
-    let resized = image::resize(bytes, target)?;
-    clipboard::write_image(&resized.mime, &resized.bytes)?;
-
-    Ok(Outcome {
-        message: format!(
-            "Resized to {}×{} ({}) for {}.",
-            resized.width,
-            resized.height,
-            crate::content::human_bytes(resized.bytes.len()),
-            target.label
-        ),
-        clipboard_changed: true,
-    })
-}
-
 fn run_command(
     argv: &[String],
     input: InputMode,
@@ -514,8 +427,14 @@ mod tests {
         fn ask_limit(&self, _: &str, _: &str, _: usize) -> Option<usize> {
             self.limit
         }
-        fn ask_resize_target(&self, _: &[Preset]) -> Option<Preset> {
-            self.target.clone()
+        fn ask_resize_target(
+            &self,
+            _: &[Preset],
+            _: bool,
+        ) -> Option<(Preset, crate::cutout::ImageOptions)> {
+            self.target
+                .clone()
+                .map(|preset| (preset, crate::cutout::ImageOptions::default()))
         }
         fn ask_replace(&self, _: &[String], _: &[String]) -> Option<crate::replace::Replacement> {
             self.replacement.clone()
@@ -638,7 +557,9 @@ mod tests {
             })
             .collect();
 
-        let batch = crate::batch::resize_batch(&sources, &preset()).expect("batch runs");
+        let batch =
+            crate::batch::resize_batch(&sources, &preset(), crate::cutout::ImageOptions::default())
+                .expect("batch runs");
         assert_eq!(batch.written.len(), 3);
         assert!(batch.failures.is_empty());
         for path in &batch.written {
@@ -658,8 +579,12 @@ mod tests {
         let bad = dir.path().join("broken.png");
         std::fs::write(&bad, b"not an image").expect("writes");
 
-        let batch = crate::batch::resize_batch(&[good, bad], &preset())
-            .expect("partial success still works");
+        let batch = crate::batch::resize_batch(
+            &[good, bad],
+            &preset(),
+            crate::cutout::ImageOptions::default(),
+        )
+        .expect("partial success still works");
         assert_eq!(batch.written.len(), 1);
         let message = batch.into_outcome(&preset()).message;
         assert!(message.contains("Resized 1 of 2"), "{message}");
@@ -672,7 +597,9 @@ mod tests {
         let bad = dir.path().join("broken.png");
         std::fs::write(&bad, b"not an image").expect("writes");
 
-        let err = crate::batch::resize_batch(&[bad], &preset()).expect_err("nothing succeeded");
+        let err =
+            crate::batch::resize_batch(&[bad], &preset(), crate::cutout::ImageOptions::default())
+                .expect_err("nothing succeeded");
         assert!(
             matches!(err, RunError::BatchFailed { total: 1, .. }),
             "{err:?}"

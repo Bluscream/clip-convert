@@ -47,8 +47,14 @@ impl Prompt for Canned {
     fn ask_limit(&self, _: &str, _: &str, _: usize) -> Option<usize> {
         self.limit
     }
-    fn ask_resize_target(&self, _: &[Preset]) -> Option<Preset> {
-        self.target.clone()
+    fn ask_resize_target(
+        &self,
+        _: &[Preset],
+        _: bool,
+    ) -> Option<(Preset, clipconv::cutout::ImageOptions)> {
+        self.target
+            .clone()
+            .map(|preset| (preset, clipconv::cutout::ImageOptions::default()))
     }
     fn ask_replace(&self, _: &[String], _: &[String]) -> Option<Replacement> {
         self.replacement.clone()

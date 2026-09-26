@@ -297,6 +297,14 @@ impl crate::prompt::Store for App {
         });
     }
 
+    fn image_options(&self) -> clipconv::cutout::ImageOptions {
+        self.config().image_options
+    }
+
+    fn set_image_options(&self, options: clipconv::cutout::ImageOptions) {
+        self.update(|config| config.image_options = options);
+    }
+
     fn remember_replace(&self, replacement: &clipconv::replace::Replacement) {
         self.update(|config| {
             let limit = config.replace.history_limit;

@@ -178,14 +178,18 @@ fn run_conversion_command(
 ///
 /// One unreadable file does not abandon the rest: the others are still useful,
 /// and the failures are named in the result rather than swallowed.
-pub(crate) fn resize_batch(files: &[PathBuf], target: &Preset) -> Result<Batch, RunError> {
+pub(crate) fn resize_batch(
+    files: &[PathBuf],
+    target: &Preset,
+    options: crate::cutout::ImageOptions,
+) -> Result<Batch, RunError> {
     let directory = scratch::output_dir("resize").map_err(RunError::TempFile)?;
 
     let mut written = Vec::new();
     let mut failures = Vec::new();
 
     for source in files {
-        match resize_file(source, target, &directory) {
+        match resize_file(source, target, &directory, options) {
             Ok(path) => written.push(path),
             Err(e) => {
                 log::warn!("resizing {} failed: {e}", source.display());
@@ -213,9 +217,10 @@ fn resize_file(
     source: &Path,
     target: &Preset,
     directory: &std::path::Path,
+    options: crate::cutout::ImageOptions,
 ) -> Result<PathBuf, RunError> {
     let bytes = std::fs::read(source).map_err(RunError::TempFile)?;
-    let resized = image::resize(&bytes, target)?;
+    let resized = image::resize(&bytes, target, options)?;
 
     // A target that keeps the source's format has no extension of its own, so
     // the result keeps the one it came in with.

@@ -9,6 +9,7 @@
 //! cannot be hidden once created.
 
 use anyhow::{Context, Result};
+use clipconv::cutout::ImageOptions;
 use clipconv::exec;
 use clipconv::presets::Preset;
 use clipconv::protocol::{ActionChoice, ActionEntry, Answer, Ask, Reply, Request, WindowSize};
@@ -43,6 +44,10 @@ pub trait Store: Send + Sync {
     /// Records a pattern and replacement that were just used, so they can be
     /// picked from a list next time instead of retyped.
     fn remember_replace(&self, replacement: &Replacement);
+    /// How the resize checkboxes were last left.
+    fn image_options(&self) -> ImageOptions;
+    /// Records how they were left this time.
+    fn set_image_options(&self, options: ImageOptions);
 }
 
 /// Runs dialogs in a separate process.
@@ -170,11 +175,25 @@ impl Prompt for Prompter {
         }
     }
 
-    fn ask_resize_target(&self, presets: &[Preset]) -> Option<Preset> {
+    fn ask_resize_target(
+        &self,
+        presets: &[Preset],
+        source_keeps_alpha: bool,
+    ) -> Option<(Preset, ImageOptions)> {
+        let remembered = self.sizes.image_options();
         match self.ask(&Request::AskResizeTarget {
             presets: presets.to_vec(),
+            options: remembered,
+            source_keeps_alpha,
         }) {
-            Reply::ResizeTarget { preset } => Some(*preset),
+            Reply::ResizeTarget { preset, options } => {
+                // Remembered only when it changed, so a resize that leaves the
+                // boxes alone does not rewrite the config file every time.
+                if options != remembered {
+                    self.sizes.set_image_options(options);
+                }
+                Some((*preset, options))
+            }
             _ => None,
         }
     }
@@ -230,9 +249,18 @@ mod tests {
     struct Remembered {
         sizes: std::sync::Mutex<std::collections::BTreeMap<String, WindowSize>>,
         replacements: std::sync::Mutex<Vec<Replacement>>,
+        options: std::sync::Mutex<ImageOptions>,
     }
 
     impl Store for Remembered {
+        fn image_options(&self) -> ImageOptions {
+            self.options.lock().map(|o| *o).unwrap_or_default()
+        }
+        fn set_image_options(&self, options: ImageOptions) {
+            if let Ok(mut held) = self.options.lock() {
+                *held = options;
+            }
+        }
         fn size(&self, key: &str) -> Option<WindowSize> {
             self.sizes.lock().ok()?.get(key).copied()
         }
@@ -285,7 +313,7 @@ mod tests {
     fn a_cancelled_dialog_yields_nothing() {
         let prompter = stub(r#"echo '{"reply":{"reply":"cancelled"}}'"#);
         assert_eq!(prompter.ask_limit("t", "m", 1), None);
-        assert_eq!(prompter.ask_resize_target(&[]), None);
+        assert_eq!(prompter.ask_resize_target(&[], true), None);
         assert_eq!(prompter.choose_action("d", &[], true), None);
     }
 

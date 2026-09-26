@@ -6,10 +6,9 @@
 
 use crate::widgets::{
     accepted, bottom_bar, close_button, color, dialog_buttons, dismiss_button, focus_first,
-    heading, history_field, icon_button, navigate, wide_button, Choice, Icons, Style,
-    BUTTON_HEIGHT, BUTTON_TEXT,
+    heading, history_field, icon_button, navigate, Choice, Icons, Style, BUTTON_HEIGHT,
+    BUTTON_TEXT,
 };
-use clipconv::presets::{Fit, Preset};
 use clipconv::protocol::{ActionChoice, ActionEntry, Reply, Request};
 
 /// Width of a dialog, in logical points.
@@ -23,20 +22,6 @@ const WIDE_DIALOG_WIDTH: f32 = 680.0;
 /// column of nothing beside them.
 const PRESET_COLUMNS: usize = 2;
 
-/// Width one column of targets needs to stay readable.
-const PRESET_COLUMN_WIDTH: f32 = 300.0;
-
-/// Most columns worth using: past this the labels are further apart than they
-/// are wide, and the list stops reading as a list.
-const PRESET_COLUMNS_MAX: usize = 4;
-
-/// Size of a preset's name.
-const PRESET_TITLE: f32 = 15.0;
-
-/// Size of the limits line under a preset's name. Deliberately smaller: it is
-/// reference information, not the thing being chosen.
-const PRESET_SUBTITLE: f32 = 11.5;
-
 /// Gap between action buttons.
 const BUTTON_GAP: f32 = 12.0;
 
@@ -45,26 +30,12 @@ const MARGIN: f32 = 22.0;
 
 /// Mutable state a dialog collects while it is open.
 pub enum State {
-    ChooseAction {
-        paste_after: bool,
-        selected: usize,
-    },
-    AskLimit {
-        value: String,
-    },
-    AskResizeTarget {
-        custom: Option<CustomSize>,
-        selected: usize,
-    },
-    AskReplace {
-        fields: ReplaceFields,
-    },
-    AskConversion {
-        selected: usize,
-    },
-    AskVideoTarget {
-        fields: VideoFields,
-    },
+    ChooseAction { paste_after: bool, selected: usize },
+    AskLimit { value: String },
+    AskResizeTarget { resize: crate::resize::State },
+    AskReplace { fields: ReplaceFields },
+    AskConversion { selected: usize },
+    AskVideoTarget { fields: VideoFields },
     ShowError,
 }
 
@@ -127,9 +98,8 @@ impl State {
             Request::AskLimit { default, .. } => Self::AskLimit {
                 value: default.to_string(),
             },
-            Request::AskResizeTarget { .. } => Self::AskResizeTarget {
-                custom: None,
-                selected: 0,
+            Request::AskResizeTarget { options, .. } => Self::AskResizeTarget {
+                resize: crate::resize::State::new(*options),
             },
             Request::AskConversion { .. } => Self::AskConversion { selected: 0 },
             Request::AskVideoTarget { .. } => Self::AskVideoTarget {
@@ -147,27 +117,6 @@ impl State {
                 },
             },
             Request::ShowError { .. } => Self::ShowError,
-        }
-    }
-}
-
-/// The fields of the custom-size form.
-pub struct CustomSize {
-    pub width: String,
-    pub height: String,
-    pub max_kb: String,
-    pub format: String,
-    pub exact: bool,
-}
-
-impl Default for CustomSize {
-    fn default() -> Self {
-        Self {
-            width: "512".to_string(),
-            height: "512".to_string(),
-            max_kb: "0".to_string(),
-            format: "png".to_string(),
-            exact: false,
         }
     }
 }
@@ -198,7 +147,7 @@ pub fn window_height(request: &Request) -> f32 {
             let rows = options.len() as f32;
             rows.mul_add(BUTTON_HEIGHT + BUTTON_GAP, 130.0).min(720.0)
         }
-        Request::AskResizeTarget { presets } => {
+        Request::AskResizeTarget { presets, .. } => {
             // Two per row, plus a row for the custom-size button.
             let rows = presets.len().div_ceil(PRESET_COLUMNS) + 1;
             #[allow(clippy::cast_precision_loss)]
@@ -239,9 +188,13 @@ pub fn show(
                     ask_limit(ui, message, value)
                 }
                 (
-                    Request::AskResizeTarget { presets },
-                    State::AskResizeTarget { custom, selected },
-                ) => ask_resize_target(ui, presets, custom, selected, icons),
+                    Request::AskResizeTarget {
+                        presets,
+                        source_keeps_alpha,
+                        ..
+                    },
+                    State::AskResizeTarget { resize },
+                ) => crate::resize::screen(ui, presets, *source_keeps_alpha, resize, icons),
                 (
                     Request::AskReplace {
                         patterns,
@@ -269,51 +222,6 @@ pub fn show(
         return Some(Reply::Cancelled);
     }
     reply
-}
-
-/// One preset: its name, with the limits it encodes underneath in smaller,
-/// dimmer text.
-///
-/// A `LayoutJob` rather than one string, because the two lines need different
-/// sizes and weights — the name is what is being chosen, the limits are there
-/// so choosing does not require remembering each platform's rules.
-fn preset_button(
-    ui: &mut egui::Ui,
-    icons: &mut Icons,
-    preset: &Preset,
-    selected: bool,
-) -> egui::Response {
-    let title =
-        color(preset.text_color.as_ref()).unwrap_or_else(|| ui.visuals().strong_text_color());
-    let mut text = egui::text::LayoutJob::default();
-    text.append(
-        &preset.label,
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::proportional(PRESET_TITLE),
-            color: title,
-            ..Default::default()
-        },
-    );
-    text.append(
-        &format!("\n{}", preset.summary()),
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::proportional(PRESET_SUBTITLE),
-            // Dimmed from the title colour rather than `weak_text_color`,
-            // which is faint enough to be hard to read at this size.
-            color: title.gamma_multiply(0.82),
-            ..Default::default()
-        },
-    );
-
-    icon_button(
-        ui,
-        icons,
-        &preset.id,
-        Style::for_preset(preset).selected(selected),
-        text,
-    )
 }
 
 fn choose_action(
@@ -397,130 +305,6 @@ fn ask_limit(ui: &mut egui::Ui, message: &str, value: &mut String) -> Option<Rep
         (Some(Choice::Cancel), _) => Some(Reply::Cancelled),
         _ if submitted => parsed.map(|value| Reply::Limit { value }),
         _ => None,
-    }
-}
-
-fn ask_resize_target(
-    ui: &mut egui::Ui,
-    presets: &[Preset],
-    custom: &mut Option<CustomSize>,
-    selected: &mut usize,
-    icons: &mut Icons,
-) -> Option<Reply> {
-    if let Some(fields) = custom.as_mut() {
-        return custom_size(ui, fields);
-    }
-
-    heading(ui, "Resize to:");
-
-    // Laid out in columns because the list is long enough that one column means
-    // most of it is off-screen — and in as many as the window is wide enough
-    // for, so resizing makes the list fit rather than leaving empty space.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    // A window is never wide enough for this to leave the range.
-    let column_count =
-        ((ui.available_width() / PRESET_COLUMN_WIDTH) as usize).clamp(1, PRESET_COLUMNS_MAX);
-
-    let mut chosen = navigate(ui.ctx(), presets.len(), selected)
-        .and_then(|index| presets.get(index))
-        .cloned();
-    let mut open_custom = false;
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for (row_index, row) in presets.chunks(column_count).enumerate() {
-            ui.columns(column_count, |columns| {
-                for (offset, (column, preset)) in columns.iter_mut().zip(row).enumerate() {
-                    let index = row_index * column_count + offset;
-                    if preset_button(column, icons, preset, index == *selected).clicked() {
-                        chosen = Some(preset.clone());
-                    }
-                }
-            });
-            ui.add_space(BUTTON_GAP);
-        }
-        if wide_button(ui, icons, "Custom size…").clicked() {
-            open_custom = true;
-        }
-    });
-
-    if open_custom {
-        *custom = Some(CustomSize::default());
-    }
-    chosen.map(|preset| Reply::ResizeTarget {
-        preset: Box::new(preset),
-    })
-}
-
-fn custom_size(ui: &mut egui::Ui, fields: &mut CustomSize) -> Option<Reply> {
-    let width = fields.width.trim().parse::<u32>().ok().filter(|v| *v > 0);
-    let height = fields.height.trim().parse::<u32>().ok().filter(|v| *v > 0);
-    let max_kb = fields.max_kb.trim().parse::<u64>().ok();
-    let ready = width.is_some() && height.is_some() && max_kb.is_some();
-
-    let choice = bottom_bar(ui, "custom-actions", |ui| {
-        dialog_buttons(ui, "Resize", ready)
-    });
-
-    heading(ui, "Fit the image to:");
-
-    let row = |ui: &mut egui::Ui, caption: &str, value: &mut String| {
-        ui.horizontal(|ui| {
-            ui.add_sized([180.0, 24.0], egui::Label::new(caption));
-            ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
-        })
-        .inner
-    };
-    let first = row(ui, "Width (px)", &mut fields.width);
-    focus_first(ui, &first);
-    row(ui, "Height (px)", &mut fields.height);
-    row(ui, "Max size (KB, 0 = any)", &mut fields.max_kb);
-
-    ui.horizontal(|ui| {
-        ui.add_sized([180.0, 24.0], egui::Label::new("Format"));
-        egui::ComboBox::from_id_salt("format")
-            .selected_text(fields.format.to_uppercase())
-            .show_ui(ui, |ui| {
-                for name in ["png", "webp", "jpeg", "gif"] {
-                    ui.selectable_value(&mut fields.format, name.to_string(), name.to_uppercase());
-                }
-            });
-    });
-
-    ui.add_space(10.0);
-    ui.checkbox(&mut fields.exact, "Pad to exactly this canvas");
-
-    if !ready {
-        ui.add_space(10.0);
-        ui.colored_label(
-            ui.visuals().error_fg_color,
-            "Width and height must be above zero, and the size a whole number.",
-        );
-    }
-
-    match choice.or_else(|| (ready && accepted(ui.ctx())).then_some(Choice::Accept)) {
-        Some(Choice::Accept) => match (width, height, max_kb) {
-            (Some(width), Some(height), Some(max_kb)) => Some(Reply::ResizeTarget {
-                preset: Box::new(Preset {
-                    id: "custom".to_string(),
-                    label: "Custom".to_string(),
-                    width,
-                    height,
-                    max_bytes: max_kb * 1024,
-                    format: Some(fields.format.clone()),
-                    fit: if fields.exact {
-                        Fit::Exact
-                    } else {
-                        Fit::Inside
-                    },
-                    icon: None,
-                    button_color: None,
-                    text_color: None,
-                }),
-            }),
-            _ => None,
-        },
-        Some(Choice::Cancel) => Some(Reply::Cancelled),
-        None => None,
     }
 }
 
@@ -689,6 +473,8 @@ mod tests {
     fn a_long_preset_list_does_not_produce_an_unusable_window() {
         let many = Request::AskResizeTarget {
             presets: clipconv::presets::factory(),
+            options: clipconv::cutout::ImageOptions::default(),
+            source_keeps_alpha: true,
         };
         assert!(
             window_height(&many) <= 720.0,
@@ -712,6 +498,8 @@ mod tests {
             },
             Request::AskResizeTarget {
                 presets: Vec::new(),
+                options: clipconv::cutout::ImageOptions::default(),
+                source_keeps_alpha: true,
             },
             Request::AskReplace {
                 patterns: Vec::new(),
@@ -862,8 +650,8 @@ mod tests {
     }
 
     #[test]
-    fn custom_size_defaults_are_usable_as_typed() {
-        let fields = CustomSize::default();
+    fn resize_form_defaults_are_usable_as_typed() {
+        let fields = crate::resize::Fields::default();
         assert_eq!(fields.width.parse::<u32>().ok(), Some(512));
         assert_eq!(fields.max_kb.parse::<u64>().ok(), Some(0));
         assert!(clipconv::encode::Format::parse(&fields.format).is_some());

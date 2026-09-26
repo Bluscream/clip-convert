@@ -167,6 +167,9 @@ pub struct Config {
     pub video: crate::video::VideoSettings,
     #[serde(default)]
     pub commands: Commands,
+    /// How the resize form's checkboxes were last left.
+    #[serde(default)]
+    pub image_options: crate::cutout::ImageOptions,
     /// Window classes that are terminals, matched case-insensitively as a
     /// substring — `org.kde.konsole` is matched by `konsole`.
     #[serde(default = "default_terminal_classes")]
@@ -245,6 +248,7 @@ impl Default for Config {
             replace: ReplaceSettings::default(),
             video: crate::video::VideoSettings::default(),
             commands: Commands::default(),
+            image_options: crate::cutout::ImageOptions::default(),
             terminal_classes: default_terminal_classes(),
             presets: presets::factory(),
             conversions: crate::convert::factory(),

@@ -130,7 +130,16 @@ pub enum Request {
         replacements: Vec<String>,
     },
     /// Which size target to resize an image to.
-    AskResizeTarget { presets: Vec<Preset> },
+    AskResizeTarget {
+        presets: Vec<Preset>,
+        /// How the checkboxes start out, remembered from last time.
+        #[serde(default)]
+        options: crate::cutout::ImageOptions,
+        /// Whether the source's own format keeps an alpha channel, which
+        /// decides the default for a preset that does not name a format.
+        #[serde(default)]
+        source_keeps_alpha: bool,
+    },
     /// How to re-encode a video: any of width, height, size and length.
     AskVideoTarget {
         /// What is being resized, for the heading, e.g. `3 videos`.
@@ -200,6 +209,10 @@ pub enum Reply {
     },
     ResizeTarget {
         preset: Box<Preset>,
+        /// The checkboxes on the resize form, which apply to whichever
+        /// target was chosen.
+        #[serde(default)]
+        options: crate::cutout::ImageOptions,
     },
     Replace {
         replacement: crate::replace::Replacement,
@@ -266,6 +279,8 @@ mod tests {
             },
             Request::AskResizeTarget {
                 presets: crate::presets::factory(),
+                options: crate::cutout::ImageOptions::default(),
+                source_keeps_alpha: true,
             },
             Request::ShowError {
                 message: "it broke".to_string(),
@@ -287,6 +302,7 @@ mod tests {
             },
             Reply::Limit { value: 140 },
             Reply::ResizeTarget {
+                options: crate::cutout::ImageOptions::default(),
                 preset: Box::new(crate::presets::factory()[0].clone()),
             },
             Reply::Replace {
@@ -375,6 +391,8 @@ mod tests {
             .size_key(),
             Request::AskResizeTarget {
                 presets: Vec::new(),
+                options: crate::cutout::ImageOptions::default(),
+                source_keeps_alpha: true,
             }
             .size_key(),
             Request::ShowError {
@@ -419,6 +437,8 @@ mod tests {
     fn a_request_is_one_line_so_it_can_be_read_with_read_line() {
         let request = Request::AskResizeTarget {
             presets: crate::presets::factory(),
+            options: crate::cutout::ImageOptions::default(),
+            source_keeps_alpha: true,
         };
         let encoded = serde_json::to_string(&request).expect("encodes");
         assert!(

@@ -71,6 +71,51 @@ pub struct Resized {
     pub height: u32,
 }
 
+/// The format the result should be written in.
+///
+/// A target that names no format keeps whatever the source already is, so a
+/// size-only target does not silently re-encode a JPEG as a PNG.
+fn wanted_format(source: &[u8], target: &Preset) -> Result<Format, ImageError> {
+    match target.format.as_deref() {
+        Some(name) => {
+            Format::parse(name).ok_or_else(|| ImageError::UnknownFormat(name.to_string()))
+        }
+        None => Ok(image::guess_format(source)
+            .ok()
+            .and_then(Format::from_guess)
+            .unwrap_or(Format::Png)),
+    }
+}
+
+/// Decodes the source and applies the background and cropping options.
+///
+/// Before anything else, because removing a background and cropping to it
+/// change the dimensions everything downstream works from.
+fn decode(
+    source: &[u8],
+    options: crate::cutout::ImageOptions,
+) -> Result<image::DynamicImage, ImageError> {
+    let decoded = image::load_from_memory(source).map_err(ImageError::Decode)?;
+    if options.is_noop() {
+        return Ok(decoded);
+    }
+    Ok(image::DynamicImage::ImageRgba8(crate::cutout::apply(
+        &decoded.to_rgba8(),
+        options,
+    )))
+}
+
+/// Whether the source already satisfies the target.
+///
+/// Returning it untouched avoids a pointless re-encode that could only lose
+/// quality. Any option being set is work in itself, so it stops this.
+fn nothing_to_do(source: &[u8], target: &Preset, options: crate::cutout::ImageOptions) -> bool {
+    options.is_noop()
+        && !target.constrains_size()
+        && target.format.is_none()
+        && (target.max_bytes == 0 || source.len() as u64 <= target.max_bytes)
+}
+
 /// Re-encodes `source` to satisfy `target`.
 ///
 /// # Errors
@@ -79,29 +124,16 @@ pub struct Resized {
 /// [`ImageError::UnknownFormat`] if the preset names a format this cannot
 /// write, and [`ImageError::TooLarge`] if no combination of quality and scale
 /// met the file-size cap.
-pub fn resize(source: &[u8], target: &Preset) -> Result<Resized, ImageError> {
-    // A target that names no format keeps whatever the source already is, so a
-    // size-only target does not silently re-encode a JPEG as a PNG.
-    let source_format = image::guess_format(source)
-        .ok()
-        .and_then(Format::from_guess);
-    let format = match target.format.as_deref() {
-        Some(name) => {
-            Format::parse(name).ok_or_else(|| ImageError::UnknownFormat(name.to_string()))?
-        }
-        None => source_format.unwrap_or(Format::Png),
-    };
-
-    let decoded = image::load_from_memory(source).map_err(ImageError::Decode)?;
+pub fn resize(
+    source: &[u8],
+    target: &Preset,
+    options: crate::cutout::ImageOptions,
+) -> Result<Resized, ImageError> {
+    let format = wanted_format(source, target)?;
+    let decoded = decode(source, options)?;
     let (source_width, source_height) = decoded.dimensions();
 
-    // Nothing to change: no dimension limit, no format change, and the source
-    // already fits. Returning it untouched avoids a pointless re-encode that
-    // could only lose quality.
-    let unchanged = !target.constrains_size()
-        && target.format.is_none()
-        && (target.max_bytes == 0 || source.len() as u64 <= target.max_bytes);
-    if unchanged {
+    if nothing_to_do(source, target, options) {
         log::debug!("already satisfies {}", target.label);
         return Ok(Resized {
             bytes: source.to_vec(),
@@ -208,6 +240,16 @@ fn estimate_scale(cap: u64, achieved: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cutout::ImageOptions;
+
+    /// The plain resize, with no background removal or cropping.
+    ///
+    /// Shadows the real one for these tests, which are about fitting and
+    /// encoding: an explicit `ImageOptions::default()` on every call would say
+    /// nothing. `cutout` has its own tests for the options themselves.
+    fn resize(source: &[u8], target: &Preset) -> Result<Resized, ImageError> {
+        super::resize(source, target, ImageOptions::default())
+    }
 
     /// Deterministic noise: compresses poorly, so the size-cap tests measure the
     /// search rather than the fixture being trivially compressible.

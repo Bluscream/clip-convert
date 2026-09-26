@@ -127,8 +127,14 @@ pub fn icon_button(
         // Painted with the same visuals a real button would use, so it responds
         // to hover and focus like every other control.
         let visuals = ui.style().interact(&response);
-        let fill = color(style.button_color)
+        let mut fill = color(style.button_color)
             .map_or(visuals.weak_bg_fill, |fill| interactive(fill, &response));
+        // An armed entry is tinted towards the selection colour, which is a
+        // stronger signal than the outline alone and survives an entry that
+        // sets its own button colour.
+        if style.armed {
+            fill = fill.lerp_to_gamma(ui.visuals().selection.bg_fill, 0.55);
+        }
         // The keyboard selection is drawn as the same outline focus uses, so
         // there is one visual language for "this is where you are".
         let stroke = if style.selected {
@@ -177,6 +183,9 @@ pub struct Style<'a> {
     pub text_color: Option<&'a String>,
     /// Whether the keyboard selection is on this entry.
     pub selected: bool,
+    /// Whether this entry has been clicked once and is waiting for the second
+    /// click that applies it.
+    pub armed: bool,
 }
 
 impl<'a> Style<'a> {
@@ -186,6 +195,7 @@ impl<'a> Style<'a> {
             button_color: action.button_color.as_ref(),
             text_color: action.text_color.as_ref(),
             selected: false,
+            armed: false,
         }
     }
 
@@ -195,6 +205,7 @@ impl<'a> Style<'a> {
             button_color: preset.button_color.as_ref(),
             text_color: preset.text_color.as_ref(),
             selected: false,
+            armed: false,
         }
     }
 
@@ -203,17 +214,12 @@ impl<'a> Style<'a> {
     pub fn selected(self, selected: bool) -> Self {
         Self { selected, ..self }
     }
-}
 
-/// A full-width button sized for quick, confident clicking.
-///
-/// `add_sized` rather than `min_size`, because only the former centres the
-/// label; a button given a minimum size draws its text against the left edge.
-/// Wrapping is on so a long label from a custom action folds onto a second line
-/// instead of running off the edge.
-pub fn wide_button(ui: &mut egui::Ui, icons: &mut Icons, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label).size(BUTTON_TEXT).strong();
-    icon_button(ui, icons, label, Style::default(), text)
+    /// The same style, marked as clicked once and ready to apply.
+    #[must_use]
+    pub fn armed(self, armed: bool) -> Self {
+        Self { armed, ..self }
+    }
 }
 
 /// A bold line summarising what is on the clipboard.
