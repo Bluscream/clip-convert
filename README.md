@@ -16,6 +16,22 @@ CLI, and this one calls it like any other configured command.
 
 ---
 
+## Screenshots
+
+<details>
+<summary>What it looks like</summary>
+
+| | |
+| :---: | :---: |
+| ![The action menu for an image](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/actions_picture.png) | ![The action menu for a file selection](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/actions_files_text.png) |
+| **An image on the clipboard.** The menu names what it found — kind, format, dimensions, size — and offers only what can act on it. | **Five files, which are also text.** A selection has a text form too, so the text actions are offered for the list of paths. |
+| ![The resize form with a preset armed](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/presets_image_resize.png) | ![Converting a PNG](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/convert_picture.png) |
+| **Size presets.** Clicking one fills its limits into the form below and tints the button; clicking it again applies it. Background removal and cropping are on by default for any format that can hold transparency. | **Conversions.** Offered only when something on the clipboard can actually be converted, and the list is whatever the config says. |
+| ![Find and replace](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/find_and_replace.png) | ![Re-encoding a video](https://raw.githubusercontent.com/Bluscream/clip-convert/main/assets/screenshots/resize_video.png) |
+| **Find and replace.** A regular expression with capture groups; both fields remember what you last used. | **Video.** A different question from a sticker preset — width, height, file size and length, any of which may be left blank. |
+
+</details>
+
 ## Installing
 
 **Linux — AppImage.** Download `clip-convert-<version>-x86_64.AppImage` from the
