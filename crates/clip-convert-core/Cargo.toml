@@ -69,7 +69,7 @@ version = "0.9"
 # no system packages: x11rb for X11, and the Wayland backend, which includes the
 # Plasma protocols.
 [target.'cfg(target_os = "linux")'.dependencies]
-enigo = { version = "0.2", default-features = false, features = ["wayland", "x11rb"], optional = true }
+enigo = { version = "0.6", default-features = false, features = ["wayland", "x11rb"], optional = true }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-enigo = { version = "0.2", optional = true }
+enigo = { version = "0.6", optional = true }
